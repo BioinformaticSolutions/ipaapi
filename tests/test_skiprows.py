@@ -89,3 +89,60 @@ def test_skip_rows_defaults_to_zero():
         ["validate", "f.txt", "--ID", "0:ensembl", "--FC", "1:logratio"]
     )
     assert args.skip_rows == 0
+
+
+# -- fold change mislabelled as log ratio ----------------------------------
+
+
+def _dataset(values, mtype):
+    import numpy as np
+    import pandas as pd
+
+    from ipaapi import ColumnMapping, Dataset, Measurement, Observation
+
+    frame = pd.DataFrame(
+        {"id": [f"ENSG{i}" for i in range(len(values))], "fc": values}
+    )
+    mapping = ColumnMapping(
+        "id", "ensembl", [Observation("o", [Measurement("fc", mtype)])]
+    )
+    return Dataset.from_frame(frame, mapping, name="d", check_ranges=False)
+
+
+def _distributions():
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    ratio = rng.lognormal(0, 1, 500)
+    signed = np.where(ratio >= 1, ratio, -1 / ratio)  # ratio, negated below 1
+    return signed, np.log2(ratio)
+
+
+def test_signed_fold_change_declared_as_logratio_is_flagged():
+    from ipaapi.models import MeasurementType
+
+    signed, _ = _distributions()
+    notes = _dataset(signed, MeasurementType.LOG_RATIO).measurement_warnings
+    assert len(notes) == 1
+    assert "declare them 'foldchange'" in notes[0]
+
+
+def test_a_genuine_log_ratio_is_not_flagged():
+    from ipaapi.models import MeasurementType
+
+    _, log2 = _distributions()
+    assert _dataset(log2, MeasurementType.LOG_RATIO).measurement_warnings == []
+
+
+def test_fold_change_declared_correctly_is_not_flagged():
+    from ipaapi.models import MeasurementType
+
+    signed, _ = _distributions()
+    assert _dataset(signed, MeasurementType.FOLD_CHANGE).measurement_warnings == []
+
+
+def test_small_datasets_are_left_alone():
+    """Too few points to say anything about the distribution."""
+    from ipaapi.models import MeasurementType
+
+    assert _dataset([2.0, 3.0, -4.0], MeasurementType.LOG_RATIO).measurement_warnings == []

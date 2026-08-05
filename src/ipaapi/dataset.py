@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 from .errors import MappingError
 from .mapping import ColumnMapping
+from .models import MeasurementType
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
@@ -194,6 +195,44 @@ class Dataset:
         )
 
     @property
+    def measurement_warnings(self) -> list:
+        """Warn where the data looks like a different measurement type than declared.
+
+        Specifically: a genuine log ratio is centred on zero, so a real
+        distribution always contains values between -1 and 1. Signed fold change
+        -- the ``ratio`` if >= 1, else ``-1/ratio`` convention -- cannot contain
+        any, by construction. A column declared ``logratio`` with nothing in that
+        interval is therefore almost certainly fold change mislabelled, which
+        inflates every magnitude exponentially while leaving directions intact.
+
+        Warnings only. IPA is the authority, and an unusual but legitimate
+        dataset should not be blocked.
+        """
+        import pandas as pd
+
+        notes = []
+        for obs in self.mapping.observations:
+            for m in obs.measurements:
+                if m.type is not MeasurementType.LOG_RATIO:
+                    continue
+                values = pd.to_numeric(self.frame[m.column], errors="coerce").dropna()
+                # Too few points to say anything about the distribution.
+                if len(values) < 50:
+                    continue
+                if ((values > -1) & (values < 1)).any():
+                    continue
+                notes.append(
+                    f"column {m.column!r} is declared {MeasurementType.LOG_RATIO.value!r}, "
+                    f"but none of its {len(values):,} values fall between -1 and 1. "
+                    "A real log ratio is centred on zero and would have many; signed "
+                    "fold change (ratio if >=1, else -1/ratio) can have none at all. "
+                    "If these are fold changes, declare them 'foldchange' -- read as "
+                    "log ratios they are interpreted as 2^value, inflating every "
+                    "magnitude."
+                )
+        return notes
+
+    @property
     def id_warnings(self) -> list:
         """Human-readable warnings about identifier coverage, empty if clean."""
         notes = []
@@ -233,6 +272,14 @@ class Dataset:
             f"{'row' if self.n_genes == 1 else 'rows'}"
         )
         body = head + "\n" + self.mapping.describe()
-        for note in self.id_warnings:
+        for note in self.warnings:
             body += f"\nWarning: {note}"
         return body
+
+    # NOTE: submit() deliberately does not repeat these; the CLI prints
+    # describe() for every dataset before uploading.
+
+    @property
+    def warnings(self) -> list:
+        """Everything worth saying about this dataset before it is uploaded."""
+        return self.measurement_warnings + self.id_warnings

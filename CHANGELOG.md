@@ -6,6 +6,18 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.2 — 2026-08-05
+
+### Added
+
+- **Warns when a column declared `logratio` looks like signed fold change.**
+  A real log ratio is centred on zero, so its distribution always contains
+  values between -1 and 1. Signed fold change (`ratio` if >= 1, else
+  `-1/ratio`) can contain none, by construction. A `logratio` column with
+  nothing in that interval is therefore almost certainly fold change
+  mislabelled — which IPA reads as `2^value`, inflating every magnitude while
+  leaving directions intact. Warning only, and skipped below 50 values.
+
 ## 0.2.1 — 2026-08-05
 
 ### Fixed
