@@ -415,16 +415,27 @@ class IPAClient:
             raise IPAError(f"Could not fetch the report URL for {analysis_id}: {exc}") from exc
 
         if response.status_code != 200:
+            body = (response.text or "").strip()[:1000]
             raise IPAError(
                 f"Could not fetch the report URL for {analysis_id} "
-                f"(HTTP {response.status_code})."
+                f"(HTTP {response.status_code}) from {url}."
+                + (f"\nIPA said: {body!r}" if body else "\nThe response was empty.")
+                + "\nInterpret links may require the commercial IPA add-on; the "
+                "analysis itself is unaffected and can be opened in IPA directly."
             )
         try:
-            link = response.json().get("link")
+            payload = response.json()
         except ValueError as exc:
-            raise IPAError(f"Report URL response for {analysis_id} was not JSON.") from exc
+            body = (response.text or "").strip()[:1000]
+            raise IPAError(
+                f"Report URL response for {analysis_id} was not JSON: {body!r}"
+            ) from exc
+        link = payload.get("link")
         if not link:
-            raise IPAError(f"No report link returned for {analysis_id}.")
+            raise IPAError(
+                f"No 'link' field in the report response for {analysis_id}. "
+                f"Response keys: {sorted(payload)!r}"
+            )
         return link
 
     def open_report(self, analysis_id: str) -> str:
