@@ -16,6 +16,7 @@ from .auth import Credentials, TokenCache, login
 from .dataset import Dataset
 from .errors import (
     AnalysisError,
+    AnalysisRefusedError,
     IPAError,
     MalformedRequestError,
     QuotaExceededError,
@@ -33,6 +34,7 @@ __all__ = [
     "QUOTA_PATTERNS",
     "looks_like_quota",
     "looks_like_html",
+    "html_error_text",
 ]
 
 _ENTITY_ENDPOINTS = {
@@ -507,19 +509,40 @@ def looks_like_html(body: str) -> bool:
     return head.startswith(("<html", "<!doctype html", "<?xml")) or "<html" in head
 
 
-def _summarise_html_error(body: str) -> str:
-    """Pull the readable part out of an IPA HTML error page."""
-    import re as _re
+#: IPA's error pages open with support boilerplate and put the actual reason
+#: last. Stripping the boilerplate is what makes the reason visible.
+_BOILERPLATE = re.compile(
+    r"If you continue to experience this problem.*?1-650-381-5111\.?",
+    re.IGNORECASE | re.DOTALL,
+)
 
-    title = _re.search(r"<title>(.*?)</title>", body, _re.IGNORECASE | _re.DOTALL)
-    text = _re.sub(r"<[^>]+>", " ", body)
-    text = _re.sub(r"\s+", " ", text).strip()
-    parts = []
-    if title:
-        parts.append(f"page title: {title.group(1).strip()!r}")
-    if text:
-        parts.append(f"page text: {text[:300]!r}")
-    return "; ".join(parts) or "an HTML error page with no readable content"
+
+def html_error_text(body: str) -> str:
+    """Return the readable message from an IPA HTML error page.
+
+    Tags are stripped, entities collapsed and the support boilerplate removed,
+    because the sentence that actually says what went wrong comes *after* it.
+    Truncating from the front -- as this used to -- discards precisely the part
+    worth reading.
+    """
+    text = re.sub(r"<[^>]+>", " ", body or "")
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    text = _BOILERPLATE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # "Error | IPA Error" prefixes carry no information.
+    text = re.sub(r"^(Error\s*\|\s*IPA\s*)+(Error\s*)*", "", text).strip()
+    return text
+
+
+def _summarise_html_error(body: str) -> str:
+    """Describe an HTML error page, keeping the tail where the reason lives."""
+    text = html_error_text(body)
+    if not text:
+        return "an HTML error page with no readable content"
+    if len(text) > 1500:
+        # Keep both ends rather than losing the conclusion.
+        text = f"{text[:500]} [...] {text[-900:]}"
+    return repr(text)
 
 
 #: IPA names the offending value in its error page; catching that turns a
@@ -555,9 +578,40 @@ def _parameter_hint(body: str):
     )
 
 
+#: IPA says this when the request reached the analysis logic but could not be
+#: run -- as opposed to being rejected on a parameter.
+_UNABLE_TO_RUN = re.compile(r"Unable to run analysis", re.IGNORECASE)
+
+
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
     """Raise the most specific submission error the response supports."""
     excerpt = body[:2000]
+
+    # Checked before the HTML branch: an exhausted allowance delivered as an
+    # error page is still a quota problem, not a malformed request.
+    if looks_like_quota(status_code, body):
+        detail = html_error_text(body) if looks_like_html(body) else excerpt
+        raise QuotaExceededError(
+            f"REJECTED: the analysis allowance appears to be exhausted.\n\n"
+            f"IPA said: {detail!r}",
+            status_code=status_code,
+            body=excerpt,
+        )
+
+    if looks_like_html(body) and _UNABLE_TO_RUN.search(body):
+        raise AnalysisRefusedError(
+            "REJECTED: IPA accepted the request but would not start the "
+            "analysis.\n\n"
+            "This is not a parameter problem -- the request reached IPA's "
+            "analysis logic, which then declined to run it. The usual causes "
+            "are an exhausted analysis allowance, a capacity limit, or a "
+            "transient fault on IPA's side; the dataset and the command line "
+            "are probably fine. The remaining files have been left in place, "
+            "so re-running the same command later resumes.\n\n"
+            f"IPA said: {_summarise_html_error(body)}",
+            status_code=status_code,
+            body=excerpt,
+        )
 
     if looks_like_html(body):
         # Lead with what IPA actually objected to. Burying it under the
@@ -565,12 +619,12 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
         headline, detail = _parameter_hint(body)
         raise MalformedRequestError(
             headline
-            + "\n\nNOTHING WAS SUBMITTED.\n\n"
+            + "\n\nThis file was NOT submitted.\n\n"
             + detail
             + "\n\nIPA answered with an HTML error page where the API returns "
             "plain text, which means the request was rejected before reaching "
-            "the analysis logic -- so every file in this batch would fail the "
-            "same way.\n"
+            "the analysis logic -- so any remaining file would fail the same "
+            "way.\n"
             f"Full response: {_summarise_html_error(body)}",
             status_code=status_code,
             body=excerpt,

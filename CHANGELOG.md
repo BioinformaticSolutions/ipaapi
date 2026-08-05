@@ -6,6 +6,27 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.3.1 — 2026-08-05
+
+### Fixed
+
+- **Error pages were truncated exactly where the reason lives.** IPA opens its
+  error pages with support boilerplate and puts the actual message last; the
+  page text was clipped at 300 characters from the front, so a real failure
+  read `Unable to run analysis: Analysis ` and stopped. The boilerplate is now
+  stripped and the tail preserved.
+- **"No files were moved" was printed even when files had been moved.** A
+  mid-batch failure files everything submitted before it; the message now says
+  what actually happened.
+- **"Unable to run analysis" was misreported as a parameter error.** That
+  wording means the request reached IPA's analysis logic, so it is not a
+  malformed request. New `AnalysisRefusedError` says so, and the run stops and
+  leaves the remaining files in place — the right behaviour if the cause is an
+  allowance or capacity limit.
+- **A quota message delivered as an HTML page** was classified as a bad
+  parameter. Quota detection now runs against the whole body before the HTML
+  branch.
+
 ## 0.3.0 — 2026-08-05
 
 Everything needed for a correct analysis is now established and defaulted.

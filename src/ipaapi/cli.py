@@ -18,7 +18,12 @@ from typing import List, Optional, Sequence, Tuple
 
 from . import __version__, history
 from .dataset import Dataset, load_table
-from .errors import IPAError, MalformedRequestError, QuotaExceededError
+from .errors import (
+    AnalysisRefusedError,
+    IPAError,
+    MalformedRequestError,
+    QuotaExceededError,
+)
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import MeasurementType, ReferenceSet
 from .triage import TRIAGE_DIRNAMES, Triage
@@ -597,11 +602,16 @@ def cmd_submit(args) -> int:
             failures.append(f"{dataset.name}: malformed request")
             malformed = True
             break
-        except QuotaExceededError as exc:
-            # The file is fine; the account is out of allowance. Leave this one
+        except (QuotaExceededError, AnalysisRefusedError) as exc:
+            # The file is fine; IPA will not run it right now. Leave this one
             # and everything after it for the next run.
             quota_reached = True
-            print(f"\nAllowance exhausted while submitting {dataset.name}:\n{exc}",
+            label = (
+                "Allowance exhausted"
+                if isinstance(exc, QuotaExceededError)
+                else "IPA declined to start the analysis"
+            )
+            print(f"\n{label} while submitting {dataset.name}:\n{exc}",
                   file=sys.stderr)
             if triage is not None:
                 for remaining in datasets[position:]:
@@ -641,14 +651,25 @@ def cmd_submit(args) -> int:
         print("\n" + triage.summary())
     if quota_reached:
         print(
-            "Re-run the same command once the allowance resets; the files left "
-            "in place are exactly the ones still to do."
+            "Re-run the same command later; the files left in place are exactly "
+            "the ones still to do."
         )
     if malformed:
-        print(
-            "No files were moved. Fix the parameter and re-run the same command.",
-            file=sys.stderr,
-        )
+        # Only claim nothing moved when nothing did -- earlier files in the
+        # batch may well have been submitted and filed before this one failed.
+        if triage is not None and (triage.submitted or triage.failed):
+            print(
+                "Files submitted before the failure have been filed; the rest "
+                "were left in place. Fix the parameter and re-run the same "
+                "command.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "No files were moved. Fix the parameter and re-run the same "
+                "command.",
+                file=sys.stderr,
+            )
 
     if not analysis_ids:
         print("\nNothing was submitted successfully.", file=sys.stderr)

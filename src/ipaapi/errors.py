@@ -14,6 +14,7 @@ __all__ = [
     "SubmissionError",
     "QuotaExceededError",
     "MalformedRequestError",
+    "AnalysisRefusedError",
     "AnalysisError",
     "ResultsUnavailableError",
 ]
@@ -69,6 +70,21 @@ class MalformedRequestError(SubmissionError):
 
     Kept distinct so batch processing stops and leaves the files alone, rather
     than quarantining perfectly good data for a mistake in the command line.
+    """
+
+
+class AnalysisRefusedError(SubmissionError):
+    """IPA accepted the request but would not start the analysis.
+
+    Distinguished from :class:`MalformedRequestError` by IPA saying "Unable to
+    run analysis", which means the request reached the analysis logic rather
+    than being rejected on a parameter. The dataset and the command line are
+    therefore probably fine, and the cause is on IPA's side -- an exhausted
+    allowance, a capacity limit, or a transient fault.
+
+    Treated like a quota response for batch purposes: the run stops and the
+    remaining files are left in place, since whatever stopped this submission
+    will very likely stop the next one too.
     """
 
 

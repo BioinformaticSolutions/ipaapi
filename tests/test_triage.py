@@ -235,10 +235,13 @@ def test_a_rerun_only_sees_what_is_left(workdir):
 
 # -- malformed requests are the command's fault, not the file's -------------
 
+# Mirrors a real IPA error page, boilerplate and all.
 HTML_ERROR = (
     '<html>\n<head>\n    <title>Error | IPA\n    </title>\n'
     '</head>\n<body>\n<div class="ipaheader">Error</div>\n'
-    "If you continue to experience this problem, please Send a Report\n"
+    "If you continue to experience this problem, please Send a Report of this "
+    "problem to Ingenuity Customer Support, or contact Ingenuity Customer "
+    "Support at AdvancedGenomicsSupport@qiagen.com or 1-650-381-5111."
     "</body></html>"
 )
 
@@ -260,8 +263,10 @@ def test_malformed_request_error_names_the_likely_parameters():
     except MalformedRequestError as exc:
         message = str(exc)
     assert "--reference-set" in message
-    assert "Error | IPA" in message          # the page title is surfaced
-    assert "every file in this batch" in message
+    # The "Error | IPA" chrome is stripped; what survives is the real text.
+    assert "Error | IPA" not in message
+    assert "Send a Report" not in message    # support boilerplate removed
+    assert "any remaining file would fail the same way" in message
 
 
 def test_plain_text_rejections_are_still_ordinary_failures():
@@ -336,7 +341,7 @@ def test_unknown_gene_id_type_is_named_and_pointed_at_the_right_flag():
         message = str(exc)
     assert message.startswith("REJECTED: IPA does not recognise the gene ID type")
     assert "'genesymbol'" in message
-    assert "NOTHING WAS SUBMITTED" in message
+    assert "This file was NOT submitted" in message
     assert "--ID COLUMN:TYPE" in message
     assert "consumes allowance" in message      # probing is not free
     assert "--reference-set" not in message     # don't misdirect
@@ -369,3 +374,70 @@ def test_only_empirically_confirmed_id_types_are_advertised():
 
     help_text = build_parser().format_help()
     assert "genesymbol" not in help_text.split("confirmed to work")[0]
+
+
+# -- IPA refusing to run an accepted request -------------------------------
+
+UNABLE_TO_RUN = (
+    "<html><head><title>Error | IPA</title></head><body>"
+    "<div>Error</div> If you continue to experience this problem, please "
+    "Send a Report of this problem to Ingenuity Customer Support, or contact "
+    "Ingenuity Customer Support at AdvancedGenomicsSupport@qiagen.com or "
+    "1-650-381-5111. &nbsp; Unable to run analysis: Analysis could not be "
+    "created</body></html>"
+)
+
+
+def test_unable_to_run_is_not_treated_as_a_parameter_problem():
+    """"Unable to run analysis" means the request reached the analysis logic."""
+    from ipaapi.errors import AnalysisRefusedError, MalformedRequestError
+
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse(UNABLE_TO_RUN, 200), expected=1)
+    except MalformedRequestError:
+        raise AssertionError("classified as a malformed request")
+    except AnalysisRefusedError as exc:
+        message = str(exc)
+    assert "would not start the analysis" in message
+    assert "not a parameter problem" in message
+    assert "left in place" in message
+
+
+def test_the_reason_survives_the_boilerplate():
+    """IPA puts its support boilerplate first and the reason last."""
+    from ipaapi.client import html_error_text
+
+    text = html_error_text(UNABLE_TO_RUN)
+    assert "Unable to run analysis: Analysis could not be created" in text
+    assert "1-650-381-5111" not in text        # boilerplate stripped
+    assert not text.startswith("Error | IPA")  # chrome stripped
+
+
+def test_a_quota_message_inside_an_html_page_is_still_a_quota_error():
+    """Previously an allowance message delivered as HTML looked like a bad parameter."""
+    from ipaapi.errors import QuotaExceededError
+
+    body = UNABLE_TO_RUN.replace("could not be created", "quota exceeded")
+    with pytest.raises(QuotaExceededError):
+        IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
+
+
+def test_refusal_stops_the_batch_and_leaves_the_rest(workdir):
+    import tempfile
+
+    from ipaapi.errors import AnalysisRefusedError
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+    calls = {"n": 0}
+
+    def submit(self, dataset, project, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise AnalysisRefusedError("refused", status_code=200, body=UNABLE_TO_RUN)
+        return ["43595871"]
+
+    _run_submit(workdir, submit, log)
+
+    assert sorted(p.name for p in (workdir / SUBMITTED_DIRNAME).iterdir()) == ["a.txt"]
+    assert (workdir / "b.txt").exists() and (workdir / "c.txt").exists()
+    assert not (workdir / FAILED_DIRNAME).exists()

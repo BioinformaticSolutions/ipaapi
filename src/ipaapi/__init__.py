@@ -56,7 +56,7 @@ from .models import AnalysisStatus, MeasurementType, ReferenceSet
 
 #: Single source of truth for the package version; pyproject.toml reads it from
 #: here at build time. Bump it in this file and nowhere else.
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "__version__",
