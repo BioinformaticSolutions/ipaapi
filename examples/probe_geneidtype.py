@@ -25,13 +25,18 @@ from ipaapi.auth import TokenCache
 from ipaapi.client import IPAClient
 from ipaapi.errors import MalformedRequestError, SubmissionError
 
+# Ordered by the IPA desktop client's label for a gene symbol column:
+# "Gene Symbol - human (HUGO / HGNC / Entrez Gene)". The client and the REST
+# API need not share vocabulary, so these are still guesses -- but drawn from
+# IPA's own wording. 'genesymbol' is already known to be rejected.
 DEFAULT_CANDIDATES = (
     "symbol",
-    "genename",
-    "hgnc",
     "hugo",
+    "hgnc",
     "entrezgene",
-    "refseq",
+    "genesymbolhuman",
+    "hugogenesymbol",
+    "genename",
 )
 
 

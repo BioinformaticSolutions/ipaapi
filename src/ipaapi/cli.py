@@ -41,11 +41,20 @@ CONFIRMED_ID_TYPES = ("ensembl",)
 
 #: Names worth trying, unverified. IPA validates server-side and names the value
 #: it rejected, so an unknown type fails fast and informatively.
+#:
+#: The gene-symbol candidates are ordered by the IPA desktop client's own label
+#: for that column -- "Gene Symbol - human (HUGO / HGNC / Entrez Gene)" -- which
+#: names the three identifier systems it covers. The client and the REST API do
+#: not necessarily share vocabulary, so these remain guesses, but they are
+#: guesses drawn from IPA's own wording rather than from convention.
 CANDIDATE_ID_TYPES = (
-    "entrezgene",
     "symbol",
-    "genename",
+    "hugo",
     "hgnc",
+    "entrezgene",
+    "genesymbolhuman",
+    "hugogenesymbol",
+    "genename",
     "refseq",
     "uniprot",
     "affymetrix",

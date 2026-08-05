@@ -6,6 +6,16 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.5 — 2026-08-05
+
+### Changed
+
+- Gene ID type candidates reordered from evidence rather than convention. The
+  IPA desktop client labels a gene symbol column "Gene Symbol - human (HUGO /
+  HGNC / Entrez Gene)", so `symbol`, `hugo`, `hgnc` and `entrezgene` are tried
+  first. Still guesses — the client and the REST API need not share vocabulary
+  — but guesses taken from IPA's own wording.
+
 ## 0.2.4 — 2026-08-05
 
 ### Fixed
