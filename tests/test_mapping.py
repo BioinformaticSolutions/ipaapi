@@ -156,3 +156,48 @@ def test_from_blocks_rejects_wrong_cutoff_count():
 def test_empty_dataset_rejected(two_obs_mapping, frame):
     with pytest.raises(MappingError, match="no rows"):
         Dataset.from_frame(frame.iloc[0:0], two_obs_mapping)
+
+
+def test_fold_change_rejection_suggests_logratio_for_log_scale_data():
+    """A column named "Fold_change" may hold log2 values; the data says which."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    log2 = np.log2(rng.lognormal(0, 1, 300))     # centred on zero
+    frame = pd.DataFrame({"id": [f"g{i}" for i in range(300)], "fc": log2})
+    mapping = ColumnMapping(
+        "id", "ensembl",
+        [Observation("o", [Measurement("fc", MeasurementType.FOLD_CHANGE)])],
+    )
+    with pytest.raises(MappingError, match="declare it 'logratio'"):
+        mapping.validate(frame)
+
+
+def test_the_hint_mentions_both_signs_when_present():
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    log2 = np.log2(rng.lognormal(0, 1, 300))
+    frame = pd.DataFrame({"id": [f"g{i}" for i in range(300)], "fc": log2})
+    mapping = ColumnMapping(
+        "id", "ensembl",
+        [Observation("o", [Measurement("fc", MeasurementType.FOLD_CHANGE)])],
+    )
+    try:
+        mapping.validate(frame)
+    except MappingError as exc:
+        assert "with both signs" in str(exc)
+        assert "0.72-fold" in str(exc)
+
+
+def test_no_hint_when_the_data_is_simply_out_of_range():
+    """Values outside (-1,1) that still fail are a different problem."""
+    frame = pd.DataFrame({"id": ["g1", "g2"], "p": [7.5, 9.0]})
+    mapping = ColumnMapping(
+        "id", "ensembl",
+        [Observation("o", [Measurement("p", MeasurementType.P_VALUE)])],
+    )
+    try:
+        mapping.validate(frame)
+    except MappingError as exc:
+        assert "logratio" not in str(exc)

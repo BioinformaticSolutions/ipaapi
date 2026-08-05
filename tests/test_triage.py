@@ -292,3 +292,30 @@ def test_a_malformed_request_leaves_every_file_alone(workdir):
     assert not (workdir / FAILED_DIRNAME).exists()
     for name in ("a.txt", "b.txt", "c.txt"):
         assert (workdir / name).exists()
+
+
+def test_a_mapping_that_fails_every_file_moves_nothing(workdir):
+    """A wrong --FC type is the command's mistake; don't quarantine the data."""
+    import tempfile
+    from unittest import mock
+
+    from ipaapi import cli
+    from ipaapi.auth import Credentials
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+    client = IPAClient(Credentials(access_token="x"), retries=0)
+    # Column 1 holds 2.0, which is a valid fold change but not a valid p-value.
+    args = cli.build_parser().parse_args(
+        [
+            "submit", str(workdir), "--ID", "0:ensembl", "--FC", "1:pvalue",
+            "--project", "P05", "--log-file", log,
+        ]
+    )
+    with mock.patch.object(cli, "_client", lambda _: client):
+        code = cli.cmd_submit(args)
+
+    assert code == 1
+    assert not (workdir / FAILED_DIRNAME).exists()
+    assert not (workdir / SUBMITTED_DIRNAME).exists()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        assert (workdir / name).exists()

@@ -6,6 +6,23 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.3 — 2026-08-05
+
+### Fixed
+
+- **A mapping that fails every file no longer quarantines the directory.** If
+  no file validates, the fault is the command rather than the data, so nothing
+  is moved to `failed/` and the run says so. Files only get filed when *some*
+  succeed and others don't.
+
+### Added
+
+- **Fold-change rejections suggest `logratio` when the data is log-scaled.**
+  A column named "Fold_change" may hold either linear ratios or log2 values.
+  When values declared `foldchange` cluster inside (-1, 1) — where fold change
+  cannot go but a log ratio spends most of its time — the error now names
+  `logratio` as the likely fix instead of only reporting the rejection.
+
 ## 0.2.2 — 2026-08-05
 
 ### Added

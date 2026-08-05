@@ -38,6 +38,36 @@ MeasurementLike = Union[MeasurementType, str]
 _BLANK_TOKENS = {"", "na", "nan", "none", "null", "-", "."}
 
 
+def _type_hint(declared: MeasurementType, bad_values: list, total: int) -> str:
+    """Suggest the measurement type the data actually looks like.
+
+    A column's name rarely settles what scale it is on -- "Fold_change" is used
+    for both linear ratios and log2 values -- so the distribution is the better
+    witness. Naming the likely correct type turns a rejection into an answer.
+    """
+    if declared is not MeasurementType.FOLD_CHANGE:
+        return ""
+
+    # Fold change is barred from (-1, 1). Values sitting there, especially with
+    # both signs, are the shape of a log ratio: log2 of 0.72 is -0.47.
+    interval = [v for v in bad_values if -1 < float(v) < 1]
+    if not interval or len(interval) < 0.2 * max(total, 1):
+        return ""
+
+    mixed_signs = any(float(v) < 0 for v in interval) and any(
+        float(v) > 0 for v in interval
+    )
+    hint = (
+        f"\n    {len(interval)} of those sit between -1 and 1"
+        + (", with both signs" if mixed_signs else "")
+        + ", which is where fold change cannot go but a log ratio spends most of "
+        "its time. If this column is log2 fold change, declare it 'logratio' "
+        "instead -- a value of -0.47 is then read as 0.72-fold rather than "
+        "rejected."
+    )
+    return hint
+
+
 def is_blank(value) -> bool:
     """Return whether *value* should be treated as a missing identifier."""
     if value is None:
@@ -367,11 +397,13 @@ class ColumnMapping:
                 bad = [v for v in series.tolist() if not m.type.is_plausible(float(v))]
                 if bad:
                     sample = ", ".join(f"{v:g}" for v in bad[:3])
-                    problems.append(
+                    note = (
                         f"column {m.column!r} (observation {obs.name!r}) is declared "
                         f"{m.type.value!r} but holds {len(bad)} out-of-range value(s), "
                         f"e.g. {sample}"
                     )
+                    note += _type_hint(m.type, bad, len(series))
+                    problems.append(note)
         if problems:
             raise MappingError(
                 "Values do not match their declared measurement types:\n  - "

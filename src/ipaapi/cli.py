@@ -503,9 +503,24 @@ def cmd_submit(args) -> int:
 
     if problems and triage is None:
         raise IPAError(problems[0][1])
+
+    # If every file fails the same way, the mapping is wrong, not the data.
+    # Quarantining the whole directory for a command-line mistake just means
+    # fishing it all back out again.
+    systemic = bool(problems) and not datasets
     for path, reason in problems:
         print(f"failed validation {path.name}: {reason}", file=sys.stderr)
-        triage.mark_failed(path, f"Validation failed.\n\n{reason}")
+        if not systemic:
+            triage.mark_failed(path, f"Validation failed.\n\n{reason}")
+
+    if systemic:
+        print(
+            f"\nAll {len(problems)} file(s) failed validation the same way, so this "
+            "looks like the mapping rather than the data.\nNothing was moved. Check "
+            "--ID, --FC and --skip-rows, then re-run the same command.",
+            file=sys.stderr,
+        )
+        return 1
 
     if not datasets:
         print("\nNo files left to submit.", file=sys.stderr)
