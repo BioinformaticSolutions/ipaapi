@@ -77,6 +77,9 @@ examples:
   ipaapi submit ~/data --pattern "*_DEG.tsv" --recursive \\
       --ID 0:ensembl --FC 1:foldchange --project GroupB
 
+  # submit returns as soon as the analyses are queued; --wait blocks instead
+  ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange --project Study1 --wait
+
   ipaapi status abc-123 abc-124
   ipaapi report abc-123 --open
 """
@@ -473,12 +476,19 @@ def cmd_submit(args) -> int:
         print("\nNothing was submitted successfully.", file=sys.stderr)
         return 1
 
-    print(f"\nSubmitted {len(analysis_ids)} analysis/analyses.")
+    noun = "analysis" if len(analysis_ids) == 1 else "analyses"
+    print(f"\nSubmitted {len(analysis_ids)} {noun}.")
     if failures:
         print(f"{len(failures)} of {len(datasets)} file(s) failed to submit.", file=sys.stderr)
 
-    if args.no_wait:
-        print("Not waiting. Check progress with: ipaapi status " + " ".join(analysis_ids))
+    if not args.wait:
+        joined = " ".join(analysis_ids)
+        print(
+            "Analyses are running in IPA. Check on them with:\n"
+            f"  ipaapi status {joined}\n"
+            f"  ipaapi report {joined}\n"
+            "Or re-run with --wait to block until they finish."
+        )
         return 1 if failures else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
@@ -570,13 +580,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and stop before logging in or uploading",
     )
     submit.add_argument(
-        "--no-wait", action="store_true", help="return as soon as the analysis is queued"
+        "--wait",
+        action="store_true",
+        help="poll until the analyses finish and print their report links, "
+        "instead of returning as soon as they are queued",
+    )
+    # Accepted silently: --no-wait is now the default, so old commands still run.
+    submit.add_argument("--no-wait", action="store_true", help=argparse.SUPPRESS)
+    submit.add_argument(
+        "--interval",
+        type=float,
+        default=30.0,
+        help="seconds between status polls; only used with --wait",
     )
     submit.add_argument(
-        "--interval", type=float, default=30.0, help="seconds between status polls"
-    )
-    submit.add_argument(
-        "--timeout", type=float, default=3600.0, help="seconds to wait for completion"
+        "--timeout",
+        type=float,
+        default=3600.0,
+        help="seconds to wait for completion; only used with --wait",
     )
     submit.set_defaults(func=cmd_submit)
 

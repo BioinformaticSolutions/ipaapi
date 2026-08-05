@@ -214,3 +214,34 @@ def test_repeated_id_flags_accumulate():
 
 def test_bare_invocation_exits_nonzero():
     assert main([]) == 2
+
+
+# -- waiting behaviour -----------------------------------------------------
+
+
+def test_submit_does_not_wait_by_default():
+    args = build_parser().parse_args(
+        ["submit", "f.txt", "--ID", "0:ensembl", "--FC", "1:foldchange", "--project", "P"]
+    )
+    assert args.wait is False
+
+
+def test_wait_is_opt_in():
+    args = build_parser().parse_args(
+        [
+            "submit", "f.txt", "--ID", "0:ensembl", "--FC", "1:foldchange",
+            "--project", "P", "--wait",
+        ]
+    )
+    assert args.wait is True
+
+
+def test_old_no_wait_flag_still_parses():
+    """--no-wait became the default; accepting it keeps existing commands working."""
+    args = build_parser().parse_args(
+        [
+            "submit", "f.txt", "--ID", "0:ensembl", "--FC", "1:foldchange",
+            "--project", "P", "--no-wait",
+        ]
+    )
+    assert args.wait is False

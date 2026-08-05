@@ -44,6 +44,9 @@ ipaapi validate rnaseq.txt --ID 0:ensembl --FC 1:foldchange
 # upload into a project and start the analysis
 ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1
 
+# ... and block until it finishes, printing the report link
+ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1 --wait
+
 # check on / fetch links for existing analyses
 ipaapi status abc-123 abc-124
 ipaapi report abc-123 --open
@@ -59,6 +62,28 @@ ipaapi report abc-123 --open
 | `--recursive` | flag | search subdirectories too |
 | `--skip-rows` | `N` | discard N lines above the header row |
 | `--sep` | `CHAR` | field delimiter (sniffed from the header line by default) |
+
+### Waiting, or not
+
+`submit` returns as soon as the analyses are queued and tells you how to check
+on them:
+
+```
+submitted SampleA_DEG: abc-123
+
+Submitted 1 analysis.
+Analyses are running in IPA. Check on them with:
+  ipaapi status abc-123
+  ipaapi report abc-123
+Or re-run with --wait to block until they finish.
+```
+
+Add `--wait` to poll instead, printing each analysis's Interpret link as it
+completes. `--interval` and `--timeout` tune the polling (default: every 30s,
+give up after an hour); they only apply with `--wait`.
+
+Analyses run on QIAGEN's servers, so nothing is lost by not waiting — and
+interrupting a `--wait` run with Ctrl-C doesn't cancel anything either.
 
 ### Comment lines above the header
 
