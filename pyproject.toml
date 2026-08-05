@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ipaapi"
+version = "0.1.0"
+description = "Python client for QIAGEN Ingenuity Pathway Analysis (IPA): dataset upload with custom column mapping, analysis submission, and result retrieval."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "Ken Jones", email = "Ken.Jones@bioinformaticsolutions.com" }]
+keywords = ["ipa", "ingenuity", "pathway", "bioinformatics", "qiagen"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "requests>=2.28",
+    "requests-oauthlib>=1.3",
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+progress = ["tqdm>=4.64"]
+dev = ["pytest>=7.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ipaapi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
