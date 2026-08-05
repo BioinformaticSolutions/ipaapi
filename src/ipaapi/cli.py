@@ -18,7 +18,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from . import __version__, history
 from .dataset import Dataset, load_table
-from .errors import IPAError, QuotaExceededError
+from .errors import IPAError, MalformedRequestError, QuotaExceededError
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import MeasurementType, ReferenceSet
 from .triage import TRIAGE_DIRNAMES, Triage
@@ -531,6 +531,7 @@ def cmd_submit(args) -> int:
     failures: List[str] = []
     records: List[history.SubmissionRecord] = []
     quota_reached = False
+    malformed = False
 
     for position, dataset in enumerate(datasets):
         source = pathlib.Path(dataset.source_path) if dataset.source_path else None
@@ -540,8 +541,20 @@ def cmd_submit(args) -> int:
                 project=args.project,
                 analysis_name=args.analysis_name,
                 dataset_name=args.dataset_name,
-                reference_set=args.reference_set,
+                reference_set=(
+                    None if args.reference_set == "omit" else args.reference_set
+                ),
             )
+        except MalformedRequestError as exc:
+            # The command line is wrong, not the data. Touch nothing.
+            print(f"\n{exc}\n", file=sys.stderr)
+            if triage is not None:
+                for remaining in datasets[position:]:
+                    if remaining.source_path:
+                        triage.mark_left(pathlib.Path(remaining.source_path))
+            failures.append(f"{dataset.name}: malformed request")
+            malformed = True
+            break
         except QuotaExceededError as exc:
             # The file is fine; the account is out of allowance. Leave this one
             # and everything after it for the next run.
@@ -588,6 +601,11 @@ def cmd_submit(args) -> int:
         print(
             "Re-run the same command once the allowance resets; the files left "
             "in place are exactly the ones still to do."
+        )
+    if malformed:
+        print(
+            "No files were moved. Fix the parameter and re-run the same command.",
+            file=sys.stderr,
         )
 
     if not analysis_ids:
@@ -758,8 +776,11 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument(
         "--reference-set",
         default=ReferenceSet.DATASET.value,
-        choices=[r.value for r in ReferenceSet],
-        help="background set the analysis is scored against",
+        choices=[r.value for r in ReferenceSet] + ["omit"],
+        help="background the analysis is scored against. 'dataset' uses the "
+        "uploaded genes, which is right for a full transcriptome but degenerates "
+        "the statistics for a pre-filtered hit list; 'omit' leaves the parameter "
+        "out so IPA applies its own default",
     )
     submit.add_argument(
         "--log-file",

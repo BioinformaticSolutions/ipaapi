@@ -6,6 +6,29 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.1 — 2026-08-05
+
+### Fixed
+
+- **A rejected parameter no longer quarantines good files.** IPA answers a
+  malformed request with an HTML error page; that was being treated as a
+  per-file failure, so a bad `--reference-set` moved a perfectly good file into
+  `failed/`. An HTML response is now `MalformedRequestError`: the run stops, no
+  file is moved, and the message names the likely parameters and quotes what
+  the page said.
+- Identifier warnings were printed twice per dataset.
+
+### Changed
+
+- **Removed `--reference-set ingenuity`.** It was a guess and IPA rejects it.
+- **Added `--reference-set omit`**, which leaves the parameter out of the
+  request entirely so IPA applies its own default. For pre-filtered hit lists
+  `dataset` makes the background equal the analysis-ready set, which degenerates
+  the enrichment statistics — z-scores are still produced but overlap p-values
+  are not meaningful.
+- Interpret-link failures report the URL, the response body and the JSON keys
+  rather than just the status code.
+
 ## 0.2.0 — 2026-08-05
 
 First version used against live IPA. Everything below came out of that run.

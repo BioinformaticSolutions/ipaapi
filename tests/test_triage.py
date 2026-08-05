@@ -231,3 +231,64 @@ def test_a_rerun_only_sees_what_is_left(workdir):
     _run_submit(workdir, submit, log)
     remaining = [p.name for p in discover_files(str(workdir))]
     assert remaining == ["b.txt", "c.txt"]
+
+
+# -- malformed requests are the command's fault, not the file's -------------
+
+HTML_ERROR = (
+    '<html>\n<head>\n    <title>Error | IPA\n    </title>\n'
+    '</head>\n<body>\n<div class="ipaheader">Error</div>\n'
+    "If you continue to experience this problem, please Send a Report\n"
+    "</body></html>"
+)
+
+
+def test_html_response_is_a_malformed_request_not_a_data_problem():
+    from ipaapi.client import looks_like_html
+    from ipaapi.errors import MalformedRequestError
+
+    assert looks_like_html(HTML_ERROR)
+    with pytest.raises(MalformedRequestError):
+        IPAClient._parse_analysis_ids(FakeResponse(HTML_ERROR, 200), expected=1)
+
+
+def test_malformed_request_error_names_the_likely_parameters():
+    from ipaapi.errors import MalformedRequestError
+
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse(HTML_ERROR, 200), expected=1)
+    except MalformedRequestError as exc:
+        message = str(exc)
+    assert "--reference-set" in message
+    assert "Error | IPA" in message          # the page title is surfaced
+    assert "every file in this batch" in message
+
+
+def test_plain_text_rejections_are_still_ordinary_failures():
+    from ipaapi.client import looks_like_html
+    from ipaapi.errors import MalformedRequestError
+
+    assert not looks_like_html("Invalid geneidtype")
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse("Invalid geneidtype", 400), expected=1)
+    except SubmissionError as exc:
+        assert not isinstance(exc, MalformedRequestError)
+
+
+def test_a_malformed_request_leaves_every_file_alone(workdir):
+    """A bad parameter must not quarantine good data."""
+    import tempfile
+
+    from ipaapi.errors import MalformedRequestError
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+
+    def submit(self, dataset, project, **kw):
+        raise MalformedRequestError("bad parameter", status_code=200, body=HTML_ERROR)
+
+    _run_submit(workdir, submit, log)
+
+    assert not (workdir / SUBMITTED_DIRNAME).exists()
+    assert not (workdir / FAILED_DIRNAME).exists()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        assert (workdir / name).exists()

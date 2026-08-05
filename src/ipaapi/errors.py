@@ -13,6 +13,7 @@ __all__ = [
     "MappingError",
     "SubmissionError",
     "QuotaExceededError",
+    "MalformedRequestError",
     "AnalysisError",
     "ResultsUnavailableError",
 ]
@@ -55,6 +56,19 @@ class QuotaExceededError(SubmissionError):
        documented, so detection is heuristic: see
        :data:`ipaapi.client.QUOTA_PATTERNS`. The raw response body is always
        reported so a misclassification is visible rather than silent.
+    """
+
+
+class MalformedRequestError(SubmissionError):
+    """IPA rejected the request itself, not the data in it.
+
+    Recognised by IPA answering with an HTML error page where the API contract
+    is plain text: that means the request never reached the analysis logic, so
+    a bad parameter -- not a bad file -- is at fault, and every other file in
+    the batch would fail identically.
+
+    Kept distinct so batch processing stops and leaves the files alone, rather
+    than quarantining perfectly good data for a mistake in the command line.
     """
 
 

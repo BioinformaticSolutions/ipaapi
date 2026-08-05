@@ -114,7 +114,23 @@ class AnalysisStatus(str, Enum):
 
 
 class ReferenceSet(str, Enum):
-    """Background gene set an analysis is scored against."""
+    """Background gene set an analysis is scored against.
+
+    Only ``dataset`` is known to be accepted -- it is the sole value QIAGEN's
+    demo code ever sent, and the API's accepted vocabulary is not documented.
+    A previously guessed ``ingenuity`` value was rejected by the server with a
+    generic HTML error page, so it has been removed rather than left to mislead.
+
+    To score against the Ingenuity Knowledge Base instead, omit the parameter
+    (pass ``reference_set=None``) so IPA applies whatever default it considers
+    correct.
+
+    .. note::
+       ``dataset`` uses the uploaded genes as background, which is right for a
+       complete measured transcriptome. For a **pre-filtered** hit list the
+       background and the analysis-ready set are the same, which degenerates
+       the enrichment statistics: z-scores are still produced, but overlap
+       p-values are not meaningful.
+    """
 
     DATASET = "dataset"
-    INGENUITY_KNOWLEDGE_BASE = "ingenuity"

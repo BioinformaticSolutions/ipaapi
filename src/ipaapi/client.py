@@ -17,6 +17,7 @@ from .dataset import Dataset
 from .errors import (
     AnalysisError,
     IPAError,
+    MalformedRequestError,
     QuotaExceededError,
     ResultsUnavailableError,
     SubmissionError,
@@ -26,7 +27,13 @@ from .models import AnalysisStatus, ReferenceSet
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
-__all__ = ["IPAClient", "AnalysisResults", "QUOTA_PATTERNS", "looks_like_quota"]
+__all__ = [
+    "IPAClient",
+    "AnalysisResults",
+    "QUOTA_PATTERNS",
+    "looks_like_quota",
+    "looks_like_html",
+]
 
 _ENTITY_ENDPOINTS = {
     "CANONICAL_PATHWAY": ("allCanonicalPathways", "pathways"),
@@ -157,7 +164,7 @@ class IPAClient:
         project: str,
         analysis_name: Optional[str] = None,
         dataset_name: Optional[str] = None,
-        reference_set: Union[ReferenceSet, str] = ReferenceSet.DATASET,
+        reference_set: Optional[Union[ReferenceSet, str]] = ReferenceSet.DATASET,
         ipa_view: str = "none",
     ) -> List[str]:
         """Upload *dataset* into *project* and start analyses on it.
@@ -175,7 +182,9 @@ class IPAClient:
                 name.
             dataset_name: Name for the uploaded dataset. Defaults to
                 ``dataset.name``, which itself defaults to the source filename.
-            reference_set: Background set analyses are scored against.
+            reference_set: Background set analyses are scored against. Pass
+                ``None`` to omit the parameter entirely and let IPA apply its
+                own default.
             ipa_view: IPA view parameter; ``"none"`` unless you have a reason.
 
         Returns:
@@ -185,15 +194,13 @@ class IPAClient:
             SubmissionError: If IPA rejects the submission or returns something
                 that is not a list of analysis IDs.
         """
-        for note in dataset.id_warnings:
-            print(f"Warning: {note}")
-
         effective_dataset_name = dataset_name or dataset.name or "dataset"
-        reference = (
-            reference_set.value
-            if isinstance(reference_set, ReferenceSet)
-            else str(reference_set)
-        )
+        if reference_set is None:
+            reference = None
+        elif isinstance(reference_set, ReferenceSet):
+            reference = reference_set.value
+        else:
+            reference = str(reference_set)
 
         pairs = _payload.build_submission_pairs(
             frame=dataset.frame,
@@ -486,9 +493,49 @@ def looks_like_quota(status_code: Optional[int], body: str) -> bool:
     return any(pattern in haystack for pattern in QUOTA_PATTERNS)
 
 
+def looks_like_html(body: str) -> bool:
+    """Whether the response is an HTML page rather than the expected plain text.
+
+    The submission endpoint answers with a bare comma-separated list of IDs. An
+    HTML page means the request was rejected before reaching the analysis logic
+    -- a malformed parameter rather than bad data.
+    """
+    head = (body or "").lstrip()[:200].lower()
+    return head.startswith(("<html", "<!doctype html", "<?xml")) or "<html" in head
+
+
+def _summarise_html_error(body: str) -> str:
+    """Pull the readable part out of an IPA HTML error page."""
+    import re as _re
+
+    title = _re.search(r"<title>(.*?)</title>", body, _re.IGNORECASE | _re.DOTALL)
+    text = _re.sub(r"<[^>]+>", " ", body)
+    text = _re.sub(r"\s+", " ", text).strip()
+    parts = []
+    if title:
+        parts.append(f"page title: {title.group(1).strip()!r}")
+    if text:
+        parts.append(f"page text: {text[:300]!r}")
+    return "; ".join(parts) or "an HTML error page with no readable content"
+
+
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
     """Raise the most specific submission error the response supports."""
     excerpt = body[:2000]
+
+    if looks_like_html(body):
+        raise MalformedRequestError(
+            "IPA rejected the request itself rather than the data: it answered "
+            "with an HTML error page where the API returns plain text. That "
+            "means a parameter was not accepted, so every file in this batch "
+            "would fail the same way.\n"
+            f"IPA returned {_summarise_html_error(body)}\n"
+            "Check the submission parameters -- --reference-set and --ID type "
+            "are the usual culprits.",
+            status_code=status_code,
+            body=excerpt,
+        )
+
     detail = f"{message}\nIPA said: {excerpt!r}" if excerpt else message
     if looks_like_quota(status_code, body):
         raise QuotaExceededError(detail, status_code=status_code, body=excerpt)

@@ -138,3 +138,17 @@ def test_encoding_escapes_hostile_characters():
 def test_analysis_name_can_differ_from_dataset_name(frame, two_obs_mapping):
     pairs = build(frame, two_obs_mapping, analysis_name="Custom run")
     assert dict(pairs[:8])["analysisname"] == "Custom run"
+
+
+def test_reference_set_can_be_omitted_entirely(frame, two_obs_mapping):
+    """So IPA applies its own default rather than being told to use the dataset."""
+    pairs = build(frame, two_obs_mapping, reference_set=None)
+    assert keys_named(pairs, "referenceset") == []
+    # Everything either side of it is still present and in order.
+    assert keys_named(pairs, "analysisname") == ["DS"]
+    assert keys_named(pairs, "geneidtype") == ["ensembl"]
+
+
+def test_reference_set_is_sent_when_given(frame, two_obs_mapping):
+    pairs = build(frame, two_obs_mapping, reference_set="dataset")
+    assert keys_named(pairs, "referenceset") == ["dataset"]

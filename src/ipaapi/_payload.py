@@ -87,7 +87,7 @@ def build_submission_pairs(
     project_name: str,
     dataset_name: str,
     analysis_name: Optional[str] = None,
-    reference_set: str = "dataset",
+    reference_set: Optional[str] = "dataset",
     ipa_view: str = "none",
 ) -> List[Pair]:
     """Return the full ordered parameter list for one submission.
@@ -104,7 +104,12 @@ def build_submission_pairs(
         ("ipaview", ipa_view),
         ("datasetname", dataset_name),
         ("analysisname", analysis_name or dataset_name),
-        ("referenceset", reference_set),
+    ]
+    # Omitted entirely when None, so IPA applies its own default rather than
+    # being told to use the uploaded genes as the background.
+    if reference_set is not None:
+        pairs.append(("referenceset", reference_set))
+    pairs += [
         ("geneidtype", mapping.gene_id_type),
         ("genecolname", mapping.gene_id_label or mapping.gene_id_column),
     ]

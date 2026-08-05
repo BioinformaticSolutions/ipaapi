@@ -35,8 +35,11 @@ def test_parse_analysis_ids_rejects_http_error():
 
 
 def test_parse_analysis_ids_rejects_html_error_page():
+    """An HTML page means the request was malformed, not that the data was bad."""
+    from ipaapi.errors import MalformedRequestError
+
     body = "<html><body>Internal error</body></html>"
-    with pytest.raises(SubmissionError, match="does not look like analysis IDs"):
+    with pytest.raises(MalformedRequestError, match="rejected the request itself"):
         IPAClient._parse_analysis_ids(FakeResponse(body), expected=1)
 
 
