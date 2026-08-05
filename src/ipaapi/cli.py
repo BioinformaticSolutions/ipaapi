@@ -16,7 +16,7 @@ import pathlib
 import sys
 from typing import List, Optional, Sequence, Tuple
 
-from . import __version__
+from . import __version__, history
 from .dataset import Dataset, load_table
 from .errors import IPAError
 from .mapping import ColumnMapping, Measurement, Observation
@@ -82,6 +82,9 @@ examples:
 
   ipaapi status abc-123 abc-124
   ipaapi report abc-123 --open
+
+  # every analysis you have submitted through this tool, with current status
+  ipaapi history --status
 """
 
 
@@ -316,14 +319,14 @@ def _load_datasets(args) -> List[Dataset]:
                 fc_spec=args.FC,
                 observation_name=getattr(args, "observation", None) or path.stem,
             )
-            datasets.append(
-                Dataset.from_frame(
-                    frame,
-                    mapping,
-                    name=getattr(args, "dataset_name", None) or path.stem,
-                    check_ranges=not args.no_range_check,
-                )
+            dataset = Dataset.from_frame(
+                frame,
+                mapping,
+                name=getattr(args, "dataset_name", None) or path.stem,
+                check_ranges=not args.no_range_check,
             )
+            dataset.source_path = str(path.resolve())
+            datasets.append(dataset)
         except IPAError as exc:
             problems.append(f"{path.name}: {exc}")
 
@@ -408,14 +411,26 @@ def _add_auth_arguments(parser: argparse.ArgumentParser) -> None:
         default="PythonAPI",
         help="applicationname IPA scopes the session to",
     )
+    parser.add_argument(
+        "--token-file",
+        default=None,
+        metavar="PATH",
+        help="token cache to use instead of the default in ~/.cache/ipaapi. "
+        "Point this at a cache copied from a machine that can run a browser",
+    )
 
 
 def _client(args):
     from .auth import TokenCache
     from .client import IPAClient
 
+    cache = None
+    if not args.no_cache:
+        token_file = getattr(args, "token_file", None)
+        cache = TokenCache(path=token_file) if token_file else TokenCache()
+
     return IPAClient.login(
-        cache=None if args.no_cache else TokenCache(),
+        cache=cache,
         application_name=args.application_name,
     )
 
@@ -455,6 +470,7 @@ def cmd_submit(args) -> int:
 
     analysis_ids: List[str] = []
     failures: List[str] = []
+    records: List[history.SubmissionRecord] = []
     for dataset in datasets:
         try:
             submitted = client.submit(
@@ -471,6 +487,23 @@ def cmd_submit(args) -> int:
             continue
         analysis_ids.extend(submitted)
         print(f"submitted {dataset.name}: {', '.join(submitted)}")
+
+        # One record per analysis, so an ID is never only in the scrollback.
+        observations = [obs.name for obs in dataset.mapping.observations]
+        records.extend(
+            history.SubmissionRecord(
+                analysis_id=analysis_id,
+                project=args.project,
+                dataset_name=dataset.name or "",
+                observation=observations[i] if i < len(observations) else "",
+                source_file=dataset.source_path or "",
+                application_name=client.application_name,
+                host=client.host,
+            )
+            for i, analysis_id in enumerate(submitted)
+        )
+
+    log_path = history.append(records, path=args.log_file)
 
     if not analysis_ids:
         print("\nNothing was submitted successfully.", file=sys.stderr)
@@ -489,6 +522,8 @@ def cmd_submit(args) -> int:
             f"  ipaapi report {joined}\n"
             "Or re-run with --wait to block until they finish."
         )
+        if log_path:
+            print(f"Recorded in {log_path} -- see 'ipaapi history'.")
         return 1 if failures else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
@@ -521,8 +556,22 @@ def cmd_report(args) -> int:
     """Print (and optionally open) IPA Interpret links."""
     client = _client(args)
     exit_code = 0
-    for analysis_id, url in client.report_urls(args.analysis_ids).items():
-        if url is None:
+    for analysis_id in args.analysis_ids:
+        # An unfinished analysis has no Interpret link yet and the endpoint
+        # answers with a bare HTTP 500, so say what is actually going on.
+        status = client.status(analysis_id)
+        if not status.is_terminal:
+            print(f"{analysis_id}: still running -- the link exists once it finishes")
+            exit_code = 1
+            continue
+        if not status.succeeded:
+            print(f"{analysis_id}: {status.name.lower()} -- no report for this analysis")
+            exit_code = 1
+            continue
+        try:
+            url = client.report_url(analysis_id)
+        except IPAError as exc:
+            print(f"{analysis_id}: {exc}", file=sys.stderr)
             exit_code = 1
             continue
         print(f"{analysis_id}: {url}")
@@ -531,6 +580,54 @@ def cmd_report(args) -> int:
 
             webbrowser.open(url)
     return exit_code
+
+
+def cmd_history(args) -> int:
+    """List analyses submitted through this tool, oldest first."""
+    rows = history.read(args.log_file)
+
+    if args.project:
+        rows = [r for r in rows if r.get("project") == args.project]
+    if args.since:
+        rows = [r for r in rows if r.get("timestamp", "") >= args.since]
+    if args.limit:
+        rows = rows[-args.limit :]
+
+    if not rows:
+        print(
+            "No submissions recorded"
+            + (f" in {args.log_file}" if args.log_file else "")
+            + ". The log only covers analyses submitted through this tool."
+        )
+        return 0
+
+    client = _client(args) if args.status else None
+
+    widths = {
+        "timestamp": max(len(r.get("timestamp", "")) for r in rows),
+        "analysis_id": max(len(r.get("analysis_id", "")) for r in rows),
+        "project": max(len(r.get("project", "")) for r in rows),
+        "dataset_name": max(len(r.get("dataset_name", "")) for r in rows),
+    }
+    for row in rows:
+        line = "  ".join(
+            [
+                row.get("timestamp", "").ljust(widths["timestamp"]),
+                row.get("analysis_id", "").ljust(widths["analysis_id"]),
+                row.get("project", "").ljust(widths["project"]),
+                row.get("dataset_name", "").ljust(widths["dataset_name"]),
+            ]
+        )
+        if client is not None:
+            try:
+                line += "  " + client.status(row["analysis_id"]).name.lower()
+            except IPAError as exc:
+                line += f"  (status unavailable: {exc})"
+        print(line)
+
+    ids = " ".join(r.get("analysis_id", "") for r in rows)
+    print(f"\n{len(rows)} submission(s). Report links: ipaapi report {ids}")
+    return 0
 
 
 # -- parser ----------------------------------------------------------------
@@ -573,6 +670,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=ReferenceSet.DATASET.value,
         choices=[r.value for r in ReferenceSet],
         help="background set the analysis is scored against",
+    )
+    submit.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="submission log to append to (default: "
+        "~/.local/state/ipaapi/submissions.tsv)",
     )
     submit.add_argument(
         "--dry-run",
@@ -621,6 +725,45 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--open", action="store_true", help="also open them in a browser")
     _add_auth_arguments(report)
     report.set_defaults(func=cmd_report)
+
+    hist = subparsers.add_parser(
+        "history",
+        help="list analyses submitted through this tool",
+        description=cmd_history.__doc__,
+        epilog=(
+            "IPA's API cannot list the analyses on an account, so this package "
+            "keeps its own log. It covers submissions made through this tool "
+            "only -- analyses submitted from the IPA client will not appear.\n\n"
+            "examples:\n"
+            "  ipaapi history\n"
+            "  ipaapi history --project singlet_RNA_P05\n"
+            "  ipaapi history --since 2026-08-01 --status\n"
+        ),
+        formatter_class=_Formatter,
+    )
+    hist.add_argument("--project", default=None, help="only this project")
+    hist.add_argument(
+        "--since",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="only submissions on or after this date",
+    )
+    hist.add_argument(
+        "--limit", type=int, default=None, metavar="N", help="only the last N entries"
+    )
+    hist.add_argument(
+        "--status",
+        action="store_true",
+        help="look up the current status of each analysis (requires login)",
+    )
+    hist.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="submission log to read (default: ~/.local/state/ipaapi/submissions.tsv)",
+    )
+    _add_auth_arguments(hist)
+    hist.set_defaults(func=cmd_history)
 
     return parser
 

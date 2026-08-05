@@ -47,6 +47,7 @@ __all__ = [
     "Credentials",
     "TokenCache",
     "login",
+    "refresh",
     "DEFAULT_CLIENT_ID",
     "AUTHORIZATION_BASE_URL",
     "TOKEN_URL",
@@ -169,8 +170,19 @@ class TokenCache:
     def _key(client_id: str, application_name: str, host: str) -> str:
         return f"{client_id}|{application_name}|{host}"
 
-    def get(self, client_id: str, application_name: str, host: str) -> Optional[Credentials]:
-        """Return cached credentials, or ``None`` on a miss or expiry."""
+    def get(
+        self,
+        client_id: str,
+        application_name: str,
+        host: str,
+        allow_expired: bool = False,
+    ) -> Optional[Credentials]:
+        """Return cached credentials, or ``None`` on a miss.
+
+        Expired entries are withheld unless *allow_expired* is set -- which
+        :func:`login` does, because an expired entry still carries the refresh
+        token needed to get a new one without a browser.
+        """
         entry = self._load_all().get(self._key(client_id, application_name, host))
         if not isinstance(entry, dict):
             return None
@@ -178,23 +190,35 @@ class TokenCache:
             creds = Credentials.from_dict(entry)
         except (TypeError, AuthenticationError):
             return None
-        return None if creds.is_expired else creds
+        if creds.is_expired and not allow_expired:
+            return None
+        return creds
 
     def put(self, client_id: str, credentials: Credentials) -> None:
-        """Persist *credentials*, best-effort; cache failures never break login."""
+        """Persist *credentials*.
+
+        A cache failure is reported but not fatal -- losing the cache costs an
+        extra login, not the run. It is not swallowed silently, because a cache
+        that never writes looks exactly like a token that expires instantly.
+        """
         data = self._load_all()
         data[self._key(client_id, credentials.application_name, credentials.host)] = (
             credentials.to_dict()
         )
         try:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            directory = os.path.dirname(self.path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             tmp = f"{self.path}.tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh)
             os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
             os.replace(tmp, self.path)
-        except OSError:
-            pass
+        except OSError as exc:
+            print(
+                f"Warning: could not write the token cache at {self.path!r} ({exc}). "
+                "You will be asked to log in again next time."
+            )
 
     def clear(self) -> None:
         """Remove the cache file if present."""
@@ -242,6 +266,98 @@ class _CallbackServer(HTTPServer):
         super().__init__(address, _CallbackHandler)
         self.result: Dict[str, Optional[str]] = {}
         self.done = threading.Event()
+
+
+def _credentials_from_token(
+    token: dict,
+    host: str,
+    application_name: str,
+    previous: Optional[Credentials] = None,
+) -> Credentials:
+    """Build :class:`Credentials` from an OAuth token response."""
+    access_token = token.get("access_token")
+    if not access_token:
+        raise AuthenticationError("Token response contained no access_token.")
+
+    expires_at = token.get("expires_at")
+    if expires_at is None and token.get("expires_in") is not None:
+        try:
+            expires_at = time.time() + float(token["expires_in"])
+        except (TypeError, ValueError):
+            expires_at = None
+
+    # A refresh response often omits the refresh token, meaning "keep using the
+    # one you have". Dropping it would force a browser login next time.
+    refresh_token = token.get("refresh_token") or (
+        previous.refresh_token if previous else None
+    )
+
+    return Credentials(
+        access_token=access_token,
+        host=host,
+        application_name=application_name,
+        expires_at=float(expires_at) if expires_at is not None else None,
+        refresh_token=refresh_token,
+        cookie_file=token.get("cookieFile") or (previous.cookie_file if previous else None),
+    )
+
+
+def refresh(
+    credentials: Credentials,
+    client_id: str = DEFAULT_CLIENT_ID,
+    token_url: str = TOKEN_URL,
+    cache: Optional[TokenCache] = None,
+) -> Credentials:
+    """Exchange a refresh token for a fresh access token. No browser involved.
+
+    This is what makes unattended and headless use practical: a token copied
+    from a machine that can run a browser keeps renewing itself on a server that
+    cannot, for as long as the refresh token stays valid.
+
+    Args:
+        credentials: Existing credentials carrying a refresh token. May be
+            expired -- that is the normal case here.
+        client_id: OAuth client the refresh token belongs to.
+        token_url: Token endpoint.
+        cache: If given, the renewed credentials are written back to it.
+
+    Raises:
+        AuthenticationError: If there is no refresh token, or the server
+            refuses to honour it (typically because it has itself expired or
+            been revoked, in which case a browser login is required).
+    """
+    if not credentials.refresh_token:
+        raise AuthenticationError(
+            "The cached token has expired and carries no refresh token, so it "
+            "cannot be renewed without logging in again."
+        )
+
+    try:
+        from requests_oauthlib import OAuth2Session
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise AuthenticationError(
+            "requests-oauthlib is required to refresh a token."
+        ) from exc
+
+    oauth = OAuth2Session(client_id)
+    try:
+        token = oauth.refresh_token(
+            token_url,
+            refresh_token=credentials.refresh_token,
+            client_id=client_id,
+        )
+    except Exception as exc:
+        raise AuthenticationError(f"Refreshing the access token failed: {exc}") from exc
+
+    renewed = _credentials_from_token(
+        token,
+        host=credentials.host,
+        application_name=credentials.application_name,
+        previous=credentials,
+    )
+    if cache is not None:
+        cache.put(client_id, renewed)
+    return renewed
 
 
 def _start_callback_server(host: str, port: int) -> _CallbackServer:
@@ -306,6 +422,14 @@ def login(
         cached = cache.get(client_id, application_name, host)
         if cached is not None:
             return cached
+
+        # Expired, but a refresh token renews it without touching a browser.
+        stale = cache.get(client_id, application_name, host, allow_expired=True)
+        if stale is not None and stale.refresh_token:
+            try:
+                return refresh(stale, client_id=client_id, token_url=token_url, cache=cache)
+            except AuthenticationError as exc:
+                print(f"Warning: {exc}\nFalling back to browser login.")
 
     try:
         from requests_oauthlib import OAuth2Session
@@ -385,26 +509,9 @@ def login(
         server.shutdown()
         server.server_close()
 
-    access_token = token.get("access_token")
-    if not access_token:
-        raise AuthenticationError("Token response contained no access_token.")
-
-    expires_at = token.get("expires_at")
-    if expires_at is None and token.get("expires_in") is not None:
-        try:
-            expires_at = time.time() + float(token["expires_in"])
-        except (TypeError, ValueError):
-            expires_at = None
-
-    credentials = Credentials(
-        access_token=access_token,
-        host=host,
-        application_name=application_name,
-        expires_at=float(expires_at) if expires_at is not None else None,
-        refresh_token=token.get("refresh_token"),
-        cookie_file=token.get("cookieFile"),
+    credentials = _credentials_from_token(
+        token, host=host, application_name=application_name
     )
-
     if cache is not None:
         cache.put(client_id, credentials)
     return credentials

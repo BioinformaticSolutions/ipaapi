@@ -85,6 +85,30 @@ give up after an hour); they only apply with `--wait`.
 Analyses run on QIAGEN's servers, so nothing is lost by not waiting — and
 interrupting a `--wait` run with Ctrl-C doesn't cancel anything either.
 
+### Finding analysis IDs later
+
+IPA's API cannot list the analyses on an account — every endpoint needs an ID
+you already hold. So the package keeps its own log: every submitted analysis
+appends a timestamped row to `~/.local/state/ipaapi/submissions.tsv`.
+
+```bash
+ipaapi history
+ipaapi history --project singlet_RNA_P05
+ipaapi history --since 2026-08-01 --limit 20
+ipaapi history --status              # look up each analysis's current state
+```
+
+```
+2026-08-05T08:35:53-06:00  43595039  singlet_RNA_P05  SampleA_DEG
+2026-08-05T08:35:53-06:00  43595041  singlet_RNA_P05  SampleB_DEG
+...
+7 submission(s). Report links: ipaapi report 43595039 43595041 ...
+```
+
+It's a plain TSV — grep it, open it in Excel, whatever. `--log-file` points at a
+different one. The log covers submissions made through this tool only; analyses
+submitted from the IPA client won't appear.
+
 ### Comment lines above the header
 
 Files often carry a provenance or title line before the real header:
@@ -300,6 +324,37 @@ client = IPAClient.login(cache=TokenCache())
 
 The redirect URI must match the OAuth client registration — for the default
 public client that is `http://localhost:8000`, so the callback port is 8000.
+
+### Headless servers
+
+Access tokens from QIAGEN are short-lived, but a **refresh token** comes with
+them, and the package spends it automatically: when the cached token has
+expired, it renews silently over HTTP with no browser and no prompt. A browser
+login is only needed when the refresh token itself is rejected.
+
+That makes the copy-a-token workflow practical on a machine with no browser:
+
+```bash
+# on a Mac, once
+ipaapi validate anything.txt --ID 0:ensembl --FC 1:foldchange   # or any submit
+
+# copy the cache across
+scp ~/.cache/ipaapi/token.json server:~/.cache/ipaapi/token.json
+ssh server chmod 600 ~/.cache/ipaapi/token.json
+```
+
+From then on the server renews its own token. `--token-file PATH` points at a
+cache somewhere other than `~/.cache/ipaapi/token.json`.
+
+If the refresh token does expire, the alternative is an SSH tunnel, since the
+redirect URI is pinned to `localhost:8000`:
+
+```bash
+ssh -L 8000:localhost:8000 you@server
+```
+
+Run `ipaapi` inside that session; it prints the authorization URL, you open it
+in your laptop's browser, and the redirect comes back down the tunnel.
 
 Already have a token from elsewhere:
 

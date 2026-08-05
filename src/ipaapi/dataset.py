@@ -126,6 +126,8 @@ class Dataset:
     frame: "pd.DataFrame"
     mapping: ColumnMapping
     name: Optional[str] = None
+    #: Absolute path this dataset was read from, when it came from a file.
+    source_path: Optional[str] = None
     #: Rows whose identifier came from the fallback column.
     gene_ids_filled: int = 0
     #: Rows left with no usable identifier at all.
@@ -153,7 +155,9 @@ class Dataset:
         frame = load_table(path, sep=sep, skip_rows=skip_rows, **read_csv_kwargs)
         if name is None:
             name = os.path.splitext(os.path.basename(str(path)))[0]
-        return cls.from_frame(frame, mapping, name=name, check_ranges=check_ranges)
+        dataset = cls.from_frame(frame, mapping, name=name, check_ranges=check_ranges)
+        dataset.source_path = os.path.abspath(str(path))
+        return dataset
 
     @classmethod
     def from_frame(
