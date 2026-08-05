@@ -441,3 +441,25 @@ def test_refusal_stops_the_batch_and_leaves_the_rest(workdir):
     assert sorted(p.name for p in (workdir / SUBMITTED_DIRNAME).iterdir()) == ["a.txt"]
     assert (workdir / "b.txt").exists() and (workdir / "c.txt").exists()
     assert not (workdir / FAILED_DIRNAME).exists()
+
+
+def test_the_real_quota_rejection_is_classified_and_readable():
+    """Verbatim from a live rejection, chrome and all."""
+    body = (
+        '<html><head><title>Error | IPA</title></head><body>'
+        '<div class="ipaheader"></div>Error &nbsp; &nbsp; If you continue to '
+        "experience this problem, please <b>Send a Report</b> of this problem to "
+        "Ingenuity Customer Support, or contact Ingenuity Customer Support at "
+        "AdvancedGenomicsSupport@qiagen.com or 1-650-381-5111. &nbsp; "
+        "Unable to run analysis: Analysis limit exceeded "
+        "<div>About QIAGEN Bioinformatics | Contact Us &copy;2000-2026 QIAGEN. "
+        "All rights reserved.</div></body></html>"
+    )
+    from ipaapi.client import html_error_text
+
+    with pytest.raises(QuotaExceededError, match="allowance appears to be exhausted"):
+        IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
+
+    # The reason survives; the boilerplate above and the chrome below do not.
+    text = html_error_text(body)
+    assert text == "Unable to run analysis: Analysis limit exceeded"

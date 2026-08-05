@@ -118,12 +118,18 @@ the moves without making them.
 
 Single-file submits are never moved — filing only applies to a directory.
 
-> **Quota detection is a heuristic.** IPA's response for an exhausted allowance
-> isn't documented, so it's matched on HTTP 429 plus wording like "quota",
-> "allowance", "exceeded" (see `ipaapi.client.QUOTA_PATTERNS`). The raw response
-> body is always printed, so a misclassification is visible rather than silent.
-> If you hit a real quota rejection and the wording differs, the printed body
-> will say so and the pattern list is a one-line fix.
+> **The allowance rejection**, confirmed from a live run, reads:
+>
+> ```
+> Unable to run analysis: Analysis limit exceeded
+> ```
+>
+> It arrives as an HTML page rather than a plain-text error, and is matched
+> against `ipaapi.client.QUOTA_PATTERNS` along with other plausible phrasings
+> and HTTP 429. Matching is deliberately broad: a false positive only leaves a
+> file for the next run, whereas a false negative would file a retryable
+> submission under `failed/`. The raw response is always printed, so a
+> misclassification stays visible.
 
 ### Finding analysis IDs later
 

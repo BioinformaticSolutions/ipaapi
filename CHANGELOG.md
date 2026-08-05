@@ -6,6 +6,18 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.3.2 — 2026-08-05
+
+### Changed
+
+- **The allowance rejection is confirmed**: `Unable to run analysis: Analysis
+  limit exceeded`, delivered as an HTML page. Added verbatim to
+  `QUOTA_PATTERNS` and documented; the remaining patterns stay as guesses at
+  other phrasings.
+- Page chrome ("About QIAGEN Bioinformatics | Contact Us (c)2000-2026 ...") is
+  stripped along with the support boilerplate, so the message reads as just
+  the reason.
+
 ## 0.3.1 — 2026-08-05
 
 ### Fixed

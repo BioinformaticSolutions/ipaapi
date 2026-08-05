@@ -468,13 +468,20 @@ class IPAClient:
         return out
 
 
-#: Phrases that suggest an exhausted allowance rather than a broken request.
+#: Phrases that indicate an exhausted allowance rather than a broken request.
 #:
-#: IPA's response for this case is undocumented, so this is a best guess. It is
-#: deliberately matched case-insensitively against the whole response body, and
-#: the body is always shown, so a wrong guess is visible immediately. If you hit
-#: a real quota rejection, the printed body will say what the true wording is.
+#: **Confirmed wording**, observed from a live rejection::
+#:
+#:     Unable to run analysis: Analysis limit exceeded
+#:
+#: The remaining patterns are still guesses at other phrasings IPA might use.
+#: Matching is deliberately broad and case-insensitive across the whole body,
+#: because the cost of a false positive is mild -- the file is left in place for
+#: the next run rather than quarantined -- while a false negative would file a
+#: retryable submission under ``failed/``. The body is always printed, so a
+#: misclassification stays visible.
 QUOTA_PATTERNS = (
+    "analysis limit exceeded",  # confirmed
     "quota",
     "allowance",
     "exceeded",
@@ -509,10 +516,15 @@ def looks_like_html(body: str) -> bool:
     return head.startswith(("<html", "<!doctype html", "<?xml")) or "<html" in head
 
 
-#: IPA's error pages open with support boilerplate and put the actual reason
-#: last. Stripping the boilerplate is what makes the reason visible.
+#: IPA's error pages sandwich the actual reason between support boilerplate
+#: above and site chrome below. Stripping both is what makes it readable.
 _BOILERPLATE = re.compile(
     r"If you continue to experience this problem.*?1-650-381-5111\.?",
+    re.IGNORECASE | re.DOTALL,
+)
+_PAGE_FOOTER = re.compile(
+    r"About QIAGEN Bioinformatics.*$|\(c\)\s*\d{4}-\d{4}\s*QIAGEN.*$"
+    r"|&copy;\s*\d{4}-\d{4}\s*QIAGEN.*$",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -528,6 +540,7 @@ def html_error_text(body: str) -> str:
     text = re.sub(r"<[^>]+>", " ", body or "")
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = _BOILERPLATE.sub(" ", text)
+    text = _PAGE_FOOTER.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     # "Error | IPA Error" prefixes carry no information.
     text = re.sub(r"^(Error\s*\|\s*IPA\s*)+(Error\s*)*", "", text).strip()
