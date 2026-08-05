@@ -39,7 +39,7 @@ def test_parse_analysis_ids_rejects_html_error_page():
     from ipaapi.errors import MalformedRequestError
 
     body = "<html><body>Internal error</body></html>"
-    with pytest.raises(MalformedRequestError, match="rejected the request itself"):
+    with pytest.raises(MalformedRequestError, match="^REJECTED:"):
         IPAClient._parse_analysis_ids(FakeResponse(body), expected=1)
 
 
