@@ -6,6 +6,26 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.3.0 — 2026-08-05
+
+Everything needed for a correct analysis is now established and defaulted.
+Confirmed working end to end against live IPA: `hugo` identifiers, `logratio`
+fold changes, no `referenceset` — producing populated p-values and FDR.
+
+### Changed — breaking
+
+- **`referenceset` is no longer sent by default.** QIAGEN's demo sent
+  `referenceset=dataset`, and this package inherited it unexamined. That makes
+  the background the uploaded genes, which for a pre-filtered hit list is the
+  same set as the foreground — leaving the enrichment statistics degenerate:
+  z-scores produced, p-values and FDR absent. Omitting the parameter lets IPA
+  apply its own default, which is confirmed to produce real statistics.
+
+  `IPAClient.submit(reference_set=...)` now defaults to `None`, and
+  `--reference-set` defaults to `omit`. Pass `dataset` explicitly to restore
+  the old behaviour — appropriate only when uploading a complete measured
+  transcriptome.
+
 ## 0.2.7 — 2026-08-05
 
 ### Added

@@ -817,12 +817,12 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--dataset-name", default=None, help="override dataset name")
     submit.add_argument(
         "--reference-set",
-        default=ReferenceSet.DATASET.value,
+        default="omit",
         choices=[r.value for r in ReferenceSet] + ["omit"],
-        help="background the analysis is scored against. 'dataset' uses the "
-        "uploaded genes, which is right for a full transcriptome but degenerates "
-        "the statistics for a pre-filtered hit list; 'omit' leaves the parameter "
-        "out so IPA applies its own default",
+        help="background the analysis is scored against. 'omit' (default) leaves "
+        "the parameter out so IPA applies its own default, which is what produces "
+        "real p-values and FDR; 'dataset' uses the uploaded genes as the "
+        "background, appropriate only for a complete measured transcriptome",
     )
     submit.add_argument(
         "--log-file",

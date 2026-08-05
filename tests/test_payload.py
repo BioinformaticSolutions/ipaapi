@@ -22,14 +22,15 @@ def keys_named(pairs, name):
 
 def test_header_parameters(frame, two_obs_mapping):
     pairs = build(frame, two_obs_mapping)
-    head = dict(pairs[:8])
+    head = dict(pairs)
     assert head["applicationname"] == "PythonAPI"
     assert head["projectname"] == "Proj"
     assert head["datasetname"] == "DS"
     assert head["analysisname"] == "DS"  # defaults to dataset name
     assert head["geneidtype"] == "ensembl"
     assert head["genecolname"] == "Gene IDs"
-    assert head["referenceset"] == "dataset"
+    # referenceset is not sent unless asked for; see the reference-set tests.
+    assert "referenceset" not in head
 
 
 def test_observation_names_are_one_indexed(frame, two_obs_mapping):
@@ -140,9 +141,9 @@ def test_analysis_name_can_differ_from_dataset_name(frame, two_obs_mapping):
     assert dict(pairs[:8])["analysisname"] == "Custom run"
 
 
-def test_reference_set_can_be_omitted_entirely(frame, two_obs_mapping):
-    """So IPA applies its own default rather than being told to use the dataset."""
-    pairs = build(frame, two_obs_mapping, reference_set=None)
+def test_reference_set_is_omitted_by_default(frame, two_obs_mapping):
+    """IPA's own default is what produces real p-values; do not override it."""
+    pairs = build(frame, two_obs_mapping)
     assert keys_named(pairs, "referenceset") == []
     # Everything either side of it is still present and in order.
     assert keys_named(pairs, "analysisname") == ["DS"]

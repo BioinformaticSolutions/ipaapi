@@ -222,6 +222,28 @@ Because names come from filenames in batch mode, `--observation`,
 `--analysis-name` and `--dataset-name` only apply when a single file is
 selected. Use `--project` to group a batch.
 
+### The reference set
+
+The reference set is the background enrichment is scored against — the
+denominator of the Fisher's exact test behind every p-value in a core analysis.
+
+**By default `ipaapi` does not send the parameter**, so IPA applies its own
+default. This is confirmed to produce real p-values and FDR.
+
+QIAGEN's demo code sent `referenceset=dataset`, which makes the background the
+genes you uploaded. That is correct only when the upload is a **complete
+measured transcriptome**. For a **pre-filtered** hit list the background and the
+analysis-ready set are the same genes, the test has nothing to be surprised
+against, and the statistics come back degenerate — z-scores present, p-values
+and FDR missing. If you see exactly that, this is why.
+
+`--reference-set dataset` restores the demo's behaviour when the upload really
+is a full transcriptome.
+
+> A previously guessed `ingenuity` value was rejected by the server. Do not
+> assume other display labels work either — see the gene ID types below for how
+> unobvious IPA's vocabulary is.
+
 ### Gene ID types
 
 IPA's accepted `geneidtype` vocabulary is **not documented publicly** and is not

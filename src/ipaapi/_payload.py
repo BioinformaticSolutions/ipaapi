@@ -87,7 +87,7 @@ def build_submission_pairs(
     project_name: str,
     dataset_name: str,
     analysis_name: Optional[str] = None,
-    reference_set: Optional[str] = "dataset",
+    reference_set: Optional[str] = None,
     ipa_view: str = "none",
 ) -> List[Pair]:
     """Return the full ordered parameter list for one submission.
@@ -105,8 +105,11 @@ def build_submission_pairs(
         ("datasetname", dataset_name),
         ("analysisname", analysis_name or dataset_name),
     ]
-    # Omitted entirely when None, so IPA applies its own default rather than
-    # being told to use the uploaded genes as the background.
+    # Omitted unless explicitly asked for, so IPA applies its own default.
+    # Sending referenceset=dataset -- as QIAGEN's demo did -- makes the
+    # background the uploaded genes, which for a pre-filtered hit list is the
+    # same set as the foreground and leaves the enrichment statistics
+    # degenerate: z-scores appear, overlap p-values do not.
     if reference_set is not None:
         pairs.append(("referenceset", reference_set))
     pairs += [

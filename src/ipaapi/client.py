@@ -164,7 +164,7 @@ class IPAClient:
         project: str,
         analysis_name: Optional[str] = None,
         dataset_name: Optional[str] = None,
-        reference_set: Optional[Union[ReferenceSet, str]] = ReferenceSet.DATASET,
+        reference_set: Optional[Union[ReferenceSet, str]] = None,
         ipa_view: str = "none",
     ) -> List[str]:
         """Upload *dataset* into *project* and start analyses on it.
@@ -182,9 +182,12 @@ class IPAClient:
                 name.
             dataset_name: Name for the uploaded dataset. Defaults to
                 ``dataset.name``, which itself defaults to the source filename.
-            reference_set: Background set analyses are scored against. Pass
-                ``None`` to omit the parameter entirely and let IPA apply its
-                own default.
+            reference_set: Background analyses are scored against. Defaults
+                to ``None``, which omits the parameter so IPA applies its own
+                default -- confirmed to produce real p-values and FDR. Pass
+                ``ReferenceSet.DATASET`` to score against the uploaded genes
+                instead, which is appropriate only when the upload is a
+                complete measured transcriptome rather than a filtered list.
             ipa_view: IPA view parameter; ``"none"`` unless you have a reason.
 
         Returns:
