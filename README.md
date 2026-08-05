@@ -383,8 +383,20 @@ scp ~/.cache/ipaapi/token.json server:~/.cache/ipaapi/token.json
 ssh server chmod 600 ~/.cache/ipaapi/token.json
 ```
 
-From then on the server renews its own token. `--token-file PATH` points at a
-cache somewhere other than `~/.cache/ipaapi/token.json`.
+From then on the server renews its own token.
+
+**If your home directory isn't writable** — a shared or exported filesystem, say
+— the cache can't be saved and *every run needs a fresh login*, which is exactly
+the situation you're trying to avoid. Put it somewhere writable:
+
+```bash
+export IPAAPI_TOKEN_FILE=$HOME/ipaapi-token.json
+export IPAAPI_LOG_FILE=$HOME/ipaapi-submissions.tsv
+```
+
+Or per command, `--token-file PATH` and `--log-file PATH`. Both failures are
+reported loudly rather than swallowed, since a cache that never writes looks
+identical to a token that expires instantly.
 
 When a login *is* genuinely needed — the refresh token was rejected — the
 cleanest answer is X forwarding:

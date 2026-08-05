@@ -245,3 +245,48 @@ def test_old_no_wait_flag_still_parses():
         ]
     )
     assert args.wait is False
+
+
+# -- versioning ------------------------------------------------------------
+
+
+def test_version_is_single_sourced_from_the_package():
+    """pyproject reads __version__ from __init__.py; nothing declares it twice."""
+    import pathlib
+    import re
+
+    import ipaapi
+
+    root = pathlib.Path(ipaapi.__file__).resolve().parent.parent.parent
+    pyproject = (root / "pyproject.toml").read_text()
+    assert 'dynamic = ["version"]' in pyproject
+    assert "[tool.hatch.version]" in pyproject
+    assert not re.search(r"^version = ", pyproject, re.MULTILINE)
+
+    # The pattern hatchling uses must actually find it.
+    src = (root / "src" / "ipaapi" / "__init__.py").read_text()
+    found = re.search(
+        r"^__version__\s*(?::.*)?=\s*(['\"])(?P<version>.+?)\1", src, re.MULTILINE
+    )
+    assert found and found.group("version") == ipaapi.__version__
+
+
+def test_version_banner_identifies_the_installation():
+    from ipaapi.cli import version_banner
+
+    banner = version_banner()
+    import ipaapi
+
+    assert ipaapi.__version__ in banner
+    assert "installed at" in banner
+    assert "python" in banner
+
+
+def test_changelog_documents_the_current_version():
+    import pathlib
+
+    import ipaapi
+
+    root = pathlib.Path(ipaapi.__file__).resolve().parent.parent.parent
+    changelog = (root / "CHANGELOG.md").read_text()
+    assert f"## {ipaapi.__version__}" in changelog

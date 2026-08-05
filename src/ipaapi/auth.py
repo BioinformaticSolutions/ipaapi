@@ -141,7 +141,16 @@ class Credentials:
         )
 
 
+#: Overrides the token cache location. Useful where the home directory is not
+#: writable -- a shared or exported filesystem, for instance -- since a cache
+#: that cannot be written means re-authenticating on every single run.
+TOKEN_FILE_ENV = "IPAAPI_TOKEN_FILE"
+
+
 def _default_cache_path() -> str:
+    override = os.environ.get(TOKEN_FILE_ENV)
+    if override:
+        return os.path.expanduser(override)
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
         os.path.expanduser("~"), ".cache"
     )
@@ -216,8 +225,12 @@ class TokenCache:
             os.replace(tmp, self.path)
         except OSError as exc:
             print(
-                f"Warning: could not write the token cache at {self.path!r} ({exc}). "
-                "You will be asked to log in again next time."
+                f"Warning: could not write the token cache at {self.path!r} ({exc}).\n"
+                "  Every run will therefore need a fresh login, which is painful "
+                "on a machine without a browser.\n"
+                "  Point it somewhere writable instead, either per-command with "
+                f"--token-file PATH, or once with:\n"
+                f"    export {TOKEN_FILE_ENV}=$HOME/ipaapi-token.json"
             )
 
     def clear(self) -> None:

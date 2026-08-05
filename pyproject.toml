@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ipaapi"
-version = "0.1.0"
+# Single source of truth: src/ipaapi/__init__.py. Keeping the number in two
+# places guarantees they drift, and a wheel whose version lies is worse than
+# no version at all.
+dynamic = ["version"]
 description = "Python client for QIAGEN Ingenuity Pathway Analysis (IPA): dataset upload with custom column mapping, analysis submission, and result retrieval."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +31,9 @@ ipaapi = "ipaapi.cli:main"
 [project.optional-dependencies]
 progress = ["tqdm>=4.64"]
 dev = ["pytest>=7.0"]
+
+[tool.hatch.version]
+path = "src/ipaapi/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ipaapi"]

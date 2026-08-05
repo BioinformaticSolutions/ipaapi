@@ -112,3 +112,32 @@ def test_since_filters_lexicographically(log):
     assert [r for r in rows if r["timestamp"] >= "1999-01-01"]
     assert not [r for r in rows if r["timestamp"] >= "9999-01-01"]
     assert stamp >= "2020-01-01"
+
+
+def test_log_file_env_var_overrides_the_default():
+    from ipaapi.history import LOG_FILE_ENV
+
+    old = os.environ.get(LOG_FILE_ENV)
+    os.environ[LOG_FILE_ENV] = "/tmp/elsewhere/subs.tsv"
+    try:
+        assert history.default_log_path() == "/tmp/elsewhere/subs.tsv"
+    finally:
+        if old is None:
+            del os.environ[LOG_FILE_ENV]
+        else:
+            os.environ[LOG_FILE_ENV] = old
+
+
+def test_unwritable_log_tells_you_to_save_the_ids():
+    import io
+    from contextlib import redirect_stdout
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        result = history.append(
+            [record("43595039")], path="/proc/definitely/not/writable/log.tsv"
+        )
+    assert result is None
+    output = buffer.getvalue()
+    assert "only in this terminal" in output
+    assert "IPAAPI_LOG_FILE" in output

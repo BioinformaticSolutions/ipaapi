@@ -54,7 +54,9 @@ from .errors import (
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import AnalysisStatus, MeasurementType, ReferenceSet
 
-__version__ = "0.1.0"
+#: Single source of truth for the package version; pyproject.toml reads it from
+#: here at build time. Bump it in this file and nowhere else.
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",

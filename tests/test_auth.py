@@ -117,3 +117,34 @@ def test_token_response_without_access_token_is_rejected():
 def test_refresh_without_a_refresh_token_explains_itself():
     with pytest.raises(AuthenticationError, match="cannot be renewed"):
         refresh(creds(expires_at=time.time() - 10))
+
+
+# -- relocating the cache --------------------------------------------------
+
+
+def test_token_file_env_var_overrides_the_default(monkeypatch=None):
+    from ipaapi.auth import TOKEN_FILE_ENV, _default_cache_path
+
+    old = os.environ.get(TOKEN_FILE_ENV)
+    os.environ[TOKEN_FILE_ENV] = "/tmp/somewhere/token.json"
+    try:
+        assert _default_cache_path() == "/tmp/somewhere/token.json"
+    finally:
+        if old is None:
+            del os.environ[TOKEN_FILE_ENV]
+        else:
+            os.environ[TOKEN_FILE_ENV] = old
+
+
+def test_unwritable_cache_is_reported_not_swallowed(capsys=None):
+    """A cache that silently never writes looks exactly like instant expiry."""
+    import io
+    from contextlib import redirect_stdout
+
+    cache = TokenCache(path="/proc/definitely/not/writable/token.json")
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        cache.put(CLIENT, creds())          # must not raise
+    output = buffer.getvalue()
+    assert "could not write the token cache" in output
+    assert "IPAAPI_TOKEN_FILE" in output    # tells the user how to fix it

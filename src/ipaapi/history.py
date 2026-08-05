@@ -23,7 +23,14 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import List, Optional, Sequence
 
-__all__ = ["SubmissionRecord", "default_log_path", "append", "read", "FIELDS"]
+__all__ = [
+    "SubmissionRecord",
+    "default_log_path",
+    "append",
+    "read",
+    "FIELDS",
+    "LOG_FILE_ENV",
+]
 
 FIELDS = (
     "timestamp",
@@ -37,8 +44,20 @@ FIELDS = (
 )
 
 
+#: Overrides the log location, for hosts where the home directory is not
+#: writable. Mirrors ``IPAAPI_TOKEN_FILE``.
+LOG_FILE_ENV = "IPAAPI_LOG_FILE"
+
+
 def default_log_path() -> str:
-    """Where the log lives unless told otherwise (honours ``XDG_STATE_HOME``)."""
+    """Where the log lives unless told otherwise.
+
+    ``IPAAPI_LOG_FILE`` wins, then ``XDG_STATE_HOME``, then
+    ``~/.local/state/ipaapi/submissions.tsv``.
+    """
+    override = os.environ.get(LOG_FILE_ENV)
+    if override:
+        return os.path.expanduser(override)
     base = os.environ.get("XDG_STATE_HOME") or os.path.join(
         os.path.expanduser("~"), ".local", "state"
     )
@@ -103,7 +122,13 @@ def append(
                 writer.writerow(record.as_row())
         return path
     except OSError as exc:
-        print(f"Warning: could not write the submission log at {path!r} ({exc}).")
+        print(
+            f"Warning: could not write the submission log at {path!r} ({exc}).\n"
+            "  The analyses were submitted, but their IDs are only in this "
+            "terminal -- save them.\n"
+            f"  Set a writable location with --log-file PATH or "
+            f"export {LOG_FILE_ENV}=$HOME/ipaapi-submissions.tsv"
+        )
         return None
 
 

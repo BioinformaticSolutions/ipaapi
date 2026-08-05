@@ -95,6 +95,29 @@ class _Formatter(
     """Show defaults, but leave the epilog's line breaks alone."""
 
 
+def version_banner() -> str:
+    """Version plus enough context to identify *which* install is running.
+
+    With several machines and hand-built wheels in play, the version number
+    alone does not answer "am I running the build I think I am". The install
+    path and interpreter do.
+    """
+    import sys as _sys
+
+    location = pathlib.Path(__file__).resolve().parent
+    lines = [
+        f"ipaapi {__version__}",
+        f"installed at {location}",
+        f"python {_sys.version.split()[0]} ({_sys.executable})",
+    ]
+
+    # An editable install runs straight from a checkout, where the working tree
+    # may be ahead of the version number. Say so rather than let it mislead.
+    if (location.parent.parent / ".git").exists():
+        lines.append("running from a source checkout (editable install)")
+    return "\n".join(lines)
+
+
 # -- argument specs --------------------------------------------------------
 
 
@@ -702,7 +725,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=_EPILOG,
         formatter_class=_Formatter,
     )
-    parser.add_argument("--version", action="version", version=f"ipaapi {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=version_banner(),
+        help="show the version, and which installation is being run",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     validate = subparsers.add_parser(
