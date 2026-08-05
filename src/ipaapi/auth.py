@@ -268,6 +268,51 @@ class _CallbackServer(HTTPServer):
         self.done = threading.Event()
 
 
+def _open_browser(url: str, browser: Optional[str] = None) -> bool:
+    """Try to display *url* in a browser. Returns whether that appears to have worked.
+
+    On a remote machine reached with ``ssh -X``/``-Y``, a browser installed on
+    that machine renders on the local display, and the OAuth redirect to
+    ``localhost:8000`` resolves on the remote side where the callback server is
+    listening. That combination works without any port forwarding.
+    """
+    try:
+        if browser:
+            return webbrowser.get(browser).open(url)
+        return webbrowser.open(url)
+    except webbrowser.Error:
+        return False
+    except Exception:
+        return False
+
+
+def _no_browser_help(url: str) -> str:
+    """Explain why no browser opened, and what to do about it."""
+    display = os.environ.get("DISPLAY")
+    lines = ["Could not open a browser automatically."]
+
+    if not display:
+        lines.append(
+            "DISPLAY is not set, so there is no graphical session to open one in. "
+            "On a remote machine, reconnect with X forwarding (`ssh -X you@host`, "
+            "or `ssh -Y` on macOS with XQuartz running) and try again -- a browser "
+            "installed on that machine will then display locally, and the OAuth "
+            "redirect resolves correctly without any port forwarding."
+        )
+    else:
+        lines.append(
+            f"DISPLAY is set to {display!r}, but no usable browser was found. "
+            "Install one (firefox, chromium) or name it with --browser."
+        )
+
+    lines.append(
+        "Alternatively, forward the callback port and use your own browser:\n"
+        "  ssh -L 8000:localhost:8000 you@host"
+    )
+    lines.append("Or open this URL yourself:\n" + url)
+    return "\n\n".join(lines)
+
+
 def _credentials_from_token(
     token: dict,
     host: str,
@@ -387,6 +432,7 @@ def login(
     scope: Optional[str] = None,
     timeout: float = 300.0,
     open_browser: bool = True,
+    browser: Optional[str] = None,
     cache: Optional[TokenCache] = None,
     force: bool = False,
     **fetch_token_kwargs,
@@ -462,9 +508,8 @@ def login(
     server = _start_callback_server(listen_host, bind_port)
     try:
         if open_browser:
-            opened = webbrowser.open(authorization_url)
-            if not opened:
-                print("Could not open a browser automatically. Visit:\n" + authorization_url)
+            if not _open_browser(authorization_url, browser):
+                print(_no_browser_help(authorization_url))
         else:
             print("Open this URL to authorize:\n" + authorization_url)
 

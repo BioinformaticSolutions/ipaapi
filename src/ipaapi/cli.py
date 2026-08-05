@@ -18,9 +18,10 @@ from typing import List, Optional, Sequence, Tuple
 
 from . import __version__, history
 from .dataset import Dataset, load_table
-from .errors import IPAError
+from .errors import IPAError, QuotaExceededError
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import MeasurementType, ReferenceSet
+from .triage import TRIAGE_DIRNAMES, Triage
 
 __all__ = ["main"]
 
@@ -266,6 +267,9 @@ def discover_files(
         for candidate in candidates
         if candidate.is_file()
         and not candidate.name.startswith(".")
+        # Files already filed into submitted/ or failed/ are not input, or a
+        # second run would resubmit work that succeeded the first time.
+        and not (TRIAGE_DIRNAMES & set(candidate.relative_to(root).parts[:-1]))
         and any(fnmatch.fnmatch(candidate.name, pat) for pat in patterns)
     )
 
@@ -291,11 +295,13 @@ def discover_files(
 _SINGLE_FILE_FLAGS = ("observation", "analysis_name", "dataset_name")
 
 
-def _load_datasets(args) -> List[Dataset]:
-    """Discover files, build the mapping for each, and validate them all.
+def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]:
+    """Discover files, build the mapping for each, and validate them.
 
-    Every file is checked before any of them is uploaded, so a bad file in the
-    middle of a batch does not leave half the analyses submitted.
+    Returns the datasets that validated and a list of ``(path, reason)`` for
+    those that did not. Callers decide what to do with the failures: `validate`
+    reports them all and stops, while `submit` on a directory files them into
+    ``failed/`` and carries on with the rest.
     """
     paths = discover_files(args.path, getattr(args, "pattern", None), getattr(args, "recursive", False))
 
@@ -309,7 +315,7 @@ def _load_datasets(args) -> List[Dataset]:
                 )
 
     datasets: List[Dataset] = []
-    problems: List[str] = []
+    problems: List[Tuple[pathlib.Path, str]] = []
     for path in paths:
         try:
             frame = load_table(path, sep=args.sep, skip_rows=args.skip_rows)
@@ -328,14 +334,9 @@ def _load_datasets(args) -> List[Dataset]:
             dataset.source_path = str(path.resolve())
             datasets.append(dataset)
         except IPAError as exc:
-            problems.append(f"{path.name}: {exc}")
+            problems.append((path, str(exc)))
 
-    if problems:
-        raise IPAError(
-            f"{len(problems)} of {len(paths)} file(s) do not fit the mapping, so "
-            "nothing was uploaded:\n  - " + "\n  - ".join(problems)
-        )
-    return datasets
+    return datasets, problems
 
 
 # -- shared arguments ------------------------------------------------------
@@ -418,6 +419,13 @@ def _add_auth_arguments(parser: argparse.ArgumentParser) -> None:
         help="token cache to use instead of the default in ~/.cache/ipaapi. "
         "Point this at a cache copied from a machine that can run a browser",
     )
+    parser.add_argument(
+        "--browser",
+        default=None,
+        metavar="NAME",
+        help="browser to open for login, e.g. firefox. Only used when a login "
+        "is actually needed; under ssh -X this displays on your local machine",
+    )
 
 
 def _client(args):
@@ -432,6 +440,7 @@ def _client(args):
     return IPAClient.login(
         cache=cache,
         application_name=args.application_name,
+        browser=getattr(args, "browser", None),
     )
 
 
@@ -440,7 +449,13 @@ def _client(args):
 
 def cmd_validate(args) -> int:
     """Check the mapping against the file(s) without contacting IPA."""
-    datasets = _load_datasets(args)
+    datasets, problems = _load_datasets(args)
+    if problems:
+        raise IPAError(
+            f"{len(problems)} of {len(datasets) + len(problems)} file(s) do not fit "
+            "the mapping:\n  - "
+            + "\n  - ".join(f"{path.name}: {reason}" for path, reason in problems)
+        )
     for index, dataset in enumerate(datasets):
         if index:
             print()
@@ -455,7 +470,26 @@ def cmd_validate(args) -> int:
 
 def cmd_submit(args) -> int:
     """Upload the dataset(s) into a project and start the analyses."""
-    datasets = _load_datasets(args)
+    root = pathlib.Path(args.path).expanduser()
+    directory_mode = root.is_dir()
+    datasets, problems = _load_datasets(args)
+
+    # Filing only applies to a directory of files. A single named file is left
+    # exactly where the user put it.
+    triage = Triage(root, dry_run=args.dry_run) if directory_mode else None
+
+    if problems and triage is None:
+        raise IPAError(problems[0][1])
+    for path, reason in problems:
+        print(f"failed validation {path.name}: {reason}", file=sys.stderr)
+        triage.mark_failed(path, f"Validation failed.\n\n{reason}")
+
+    if not datasets:
+        print("\nNo files left to submit.", file=sys.stderr)
+        if triage is not None and triage.summary():
+            print(triage.summary(), file=sys.stderr)
+        return 1
+
     for index, dataset in enumerate(datasets):
         if index:
             print()
@@ -464,6 +498,8 @@ def cmd_submit(args) -> int:
     if args.dry_run:
         noun = "file" if len(datasets) == 1 else "files"
         print(f"\nDry run: {len(datasets)} {noun} valid; stopping before login.")
+        if triage is not None and triage.summary():
+            print(triage.summary())
         return 0
 
     client = _client(args)
@@ -471,7 +507,10 @@ def cmd_submit(args) -> int:
     analysis_ids: List[str] = []
     failures: List[str] = []
     records: List[history.SubmissionRecord] = []
-    for dataset in datasets:
+    quota_reached = False
+
+    for position, dataset in enumerate(datasets):
+        source = pathlib.Path(dataset.source_path) if dataset.source_path else None
         try:
             submitted = client.submit(
                 dataset,
@@ -480,11 +519,24 @@ def cmd_submit(args) -> int:
                 dataset_name=args.dataset_name,
                 reference_set=args.reference_set,
             )
+        except QuotaExceededError as exc:
+            # The file is fine; the account is out of allowance. Leave this one
+            # and everything after it for the next run.
+            quota_reached = True
+            print(f"\nAllowance exhausted while submitting {dataset.name}:\n{exc}",
+                  file=sys.stderr)
+            if triage is not None:
+                for remaining in datasets[position:]:
+                    if remaining.source_path:
+                        triage.mark_left(pathlib.Path(remaining.source_path))
+            break
         except IPAError as exc:
-            # Keep going: a later file failing should not strand earlier ones.
             failures.append(f"{dataset.name}: {exc}")
             print(f"FAILED {dataset.name}: {exc}", file=sys.stderr)
+            if triage is not None and source is not None:
+                triage.mark_failed(source, f"Submission rejected by IPA.\n\n{exc}")
             continue
+
         analysis_ids.extend(submitted)
         print(f"submitted {dataset.name}: {', '.join(submitted)}")
 
@@ -502,8 +554,18 @@ def cmd_submit(args) -> int:
             )
             for i, analysis_id in enumerate(submitted)
         )
+        if triage is not None and source is not None:
+            triage.mark_submitted(source)
 
     log_path = history.append(records, path=args.log_file)
+
+    if triage is not None and triage.summary():
+        print("\n" + triage.summary())
+    if quota_reached:
+        print(
+            "Re-run the same command once the allowance resets; the files left "
+            "in place are exactly the ones still to do."
+        )
 
     if not analysis_ids:
         print("\nNothing was submitted successfully.", file=sys.stderr)
@@ -524,10 +586,10 @@ def cmd_submit(args) -> int:
         )
         if log_path:
             print(f"Recorded in {log_path} -- see 'ipaapi history'.")
-        return 1 if failures else 0
+        return 1 if (failures or quota_reached) else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
-    exit_code = 1 if failures else 0
+    exit_code = 1 if (failures or quota_reached) else 0
     for analysis_id, status in statuses.items():
         print(f"{analysis_id}: {status.name.lower()}")
         if status.succeeded:

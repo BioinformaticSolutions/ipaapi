@@ -17,6 +17,7 @@ from .dataset import Dataset
 from .errors import (
     AnalysisError,
     IPAError,
+    QuotaExceededError,
     ResultsUnavailableError,
     SubmissionError,
 )
@@ -25,7 +26,7 @@ from .models import AnalysisStatus, ReferenceSet
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
-__all__ = ["IPAClient", "AnalysisResults"]
+__all__ = ["IPAClient", "AnalysisResults", "QUOTA_PATTERNS", "looks_like_quota"]
 
 _ENTITY_ENDPOINTS = {
     "CANONICAL_PATHWAY": ("allCanonicalPathways", "pathways"),
@@ -225,19 +226,19 @@ class IPAClient:
     def _parse_analysis_ids(response: requests.Response, expected: int) -> List[str]:
         text = (response.text or "").strip()
         if response.status_code != 200:
-            raise SubmissionError(
+            _raise_submission_error(
                 f"IPA rejected the submission (HTTP {response.status_code}).",
-                status_code=response.status_code,
-                body=text[:2000],
+                response.status_code,
+                text,
             )
         ids = [part.strip() for part in text.split(",") if part.strip()]
         if not ids or not all(_ID_RE.match(i) for i in ids):
-            raise SubmissionError(
+            _raise_submission_error(
                 "IPA returned a response that does not look like analysis IDs. "
-                "This usually means the request was malformed or the token lacks "
-                "permission for the project.",
-                status_code=response.status_code,
-                body=text[:2000],
+                "This usually means the request was malformed, the allowance is "
+                "exhausted, or the token lacks permission for the project.",
+                response.status_code,
+                text,
             )
         if len(ids) != expected:
             # Not fatal -- surface it rather than silently mismatching.
@@ -442,6 +443,45 @@ class IPAClient:
                 print(f"Warning: {exc}")
                 out[analysis_id] = None
         return out
+
+
+#: Phrases that suggest an exhausted allowance rather than a broken request.
+#:
+#: IPA's response for this case is undocumented, so this is a best guess. It is
+#: deliberately matched case-insensitively against the whole response body, and
+#: the body is always shown, so a wrong guess is visible immediately. If you hit
+#: a real quota rejection, the printed body will say what the true wording is.
+QUOTA_PATTERNS = (
+    "quota",
+    "allowance",
+    "exceeded",
+    "limit reached",
+    "usage limit",
+    "too many analyses",
+    "no analyses remaining",
+    "insufficient credits",
+)
+
+
+def looks_like_quota(status_code: Optional[int], body: str) -> bool:
+    """Whether a rejection looks like an exhausted allowance.
+
+    HTTP 429 is treated as a quota response outright; otherwise the body is
+    searched for any of :data:`QUOTA_PATTERNS`.
+    """
+    if status_code == 429:
+        return True
+    haystack = (body or "").lower()
+    return any(pattern in haystack for pattern in QUOTA_PATTERNS)
+
+
+def _raise_submission_error(message: str, status_code: Optional[int], body: str):
+    """Raise the most specific submission error the response supports."""
+    excerpt = body[:2000]
+    detail = f"{message}\nIPA said: {excerpt!r}" if excerpt else message
+    if looks_like_quota(status_code, body):
+        raise QuotaExceededError(detail, status_code=status_code, body=excerpt)
+    raise SubmissionError(detail, status_code=status_code, body=excerpt)
 
 
 def _sort_key(value) -> float:

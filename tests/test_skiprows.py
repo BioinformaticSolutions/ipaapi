@@ -78,7 +78,8 @@ def test_column_numbers_count_from_the_header(commented):
         ]
     )
     assert args.skip_rows == 1
-    datasets = _load_datasets(args)
+    datasets, problems = _load_datasets(args)
+    assert problems == []
     assert datasets[0].mapping.gene_id_column == "EnsemblID"
     assert datasets[0].mapping.observations[0].measurements[0].column == "log2FC"
 

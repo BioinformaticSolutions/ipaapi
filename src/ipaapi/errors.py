@@ -12,6 +12,7 @@ __all__ = [
     "AuthenticationError",
     "MappingError",
     "SubmissionError",
+    "QuotaExceededError",
     "AnalysisError",
     "ResultsUnavailableError",
 ]
@@ -40,6 +41,21 @@ class SubmissionError(IPAError):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+class QuotaExceededError(SubmissionError):
+    """The account has no analyses left in its allowance.
+
+    Distinguished from other submission failures because the file is fine and
+    should be retried once the allowance resets -- unlike a malformed dataset,
+    which will fail identically forever.
+
+    .. warning::
+       The exact response IPA sends when an allowance is exhausted is not
+       documented, so detection is heuristic: see
+       :data:`ipaapi.client.QUOTA_PATTERNS`. The raw response body is always
+       reported so a misclassification is visible rather than silent.
+    """
 
 
 class AnalysisError(IPAError):

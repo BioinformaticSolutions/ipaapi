@@ -93,14 +93,16 @@ def parse(tree, *extra):
 
 
 def test_each_file_becomes_its_own_dataset_named_after_the_file(tree):
-    datasets = _load_datasets(parse(tree, "--pattern", "*_DEG.txt"))
+    datasets, problems = _load_datasets(parse(tree, "--pattern", "*_DEG.txt"))
+    assert problems == []
     assert [d.name for d in datasets] == ["SampleA_DEG", "SampleB_DEG"]
     # Observation name comes from the filename, not the FC column header.
     assert datasets[0].mapping.observations[0].name == "SampleA_DEG"
 
 
 def test_single_file_still_works(tree):
-    datasets = _load_datasets(parse(tree / "SampleA_DEG.txt"))
+    datasets, problems = _load_datasets(parse(tree / "SampleA_DEG.txt"))
+    assert problems == []
     assert len(datasets) == 1
     assert datasets[0].name == "SampleA_DEG"
 
@@ -110,16 +112,20 @@ def test_observation_override_rejected_for_multiple_files(tree):
         _load_datasets(parse(tree, "--pattern", "*_DEG.txt", "--observation", "one name"))
 
 
-def test_one_bad_file_aborts_the_whole_batch(tree):
+def test_a_bad_file_is_reported_without_sinking_the_good_ones(tree):
     (tree / "SampleZ_DEG.txt").write_text("id\nENSG1\n")  # no fold-change column
-    with pytest.raises(IPAError, match="nothing was uploaded"):
-        _load_datasets(parse(tree, "--pattern", "*_DEG.txt"))
+    datasets, problems = _load_datasets(parse(tree, "--pattern", "*_DEG.txt"))
+    assert [d.name for d in datasets] == ["SampleA_DEG", "SampleB_DEG"]
+    assert [p.name for p, _ in problems] == ["SampleZ_DEG.txt"]
 
 
-def test_the_offending_file_is_named(tree):
+def test_validate_still_refuses_the_whole_batch(tree):
+    """`validate` is all-or-nothing; `submit` is the one that files failures."""
+    from ipaapi.cli import cmd_validate
+
     (tree / "SampleZ_DEG.txt").write_text("id\nENSG1\n")
     with pytest.raises(IPAError, match="SampleZ_DEG.txt"):
-        _load_datasets(parse(tree, "--pattern", "*_DEG.txt"))
+        cmd_validate(parse(tree, "--pattern", "*_DEG.txt"))
 
 
 def test_pattern_and_recursive_reach_the_parser(tree):

@@ -85,6 +85,46 @@ give up after an hour); they only apply with `--wait`.
 Analyses run on QIAGEN's servers, so nothing is lost by not waiting — and
 interrupting a `--wait` run with Ctrl-C doesn't cancel anything either.
 
+### Files are filed as they are processed
+
+When `PATH` is a directory, each file is moved as its outcome becomes known:
+
+| Outcome | Where the file goes |
+| --- | --- |
+| IPA accepted it | `submitted/` — done, never resubmitted |
+| The file is the problem | `failed/`, with a `.error.txt` note beside it |
+| Allowance exhausted | left in place for the next run |
+
+```
+failed validation SampleBAD_DEG.txt: --FC refers to column 1, but the file has only 1 column(s)
+submitted SampleA_DEG: 43595001
+submitted SampleB_DEG: 43595002
+
+Allowance exhausted while submitting SampleC_DEG:
+IPA said: 'Monthly analysis quota exceeded'
+
+2 file(s) moved to submitted/
+1 file(s) moved to failed/
+2 file(s) left in place for the next run
+Re-run the same command once the allowance resets; the files left in place are
+exactly the ones still to do.
+```
+
+So the source directory shrinks to exactly the work outstanding, and re-running
+the identical command picks up where it stopped. `submitted/` and `failed/` are
+excluded from discovery, so a second run can't re-ingest its own output. The
+folders are created only when something needs filing, and `--dry-run` reports
+the moves without making them.
+
+Single-file submits are never moved — filing only applies to a directory.
+
+> **Quota detection is a heuristic.** IPA's response for an exhausted allowance
+> isn't documented, so it's matched on HTTP 429 plus wording like "quota",
+> "allowance", "exceeded" (see `ipaapi.client.QUOTA_PATTERNS`). The raw response
+> body is always printed, so a misclassification is visible rather than silent.
+> If you hit a real quota rejection and the wording differs, the printed body
+> will say so and the pattern list is a one-line fix.
+
 ### Finding analysis IDs later
 
 IPA's API cannot list the analyses on an account — every endpoint needs an ID
@@ -346,15 +386,29 @@ ssh server chmod 600 ~/.cache/ipaapi/token.json
 From then on the server renews its own token. `--token-file PATH` points at a
 cache somewhere other than `~/.cache/ipaapi/token.json`.
 
-If the refresh token does expire, the alternative is an SSH tunnel, since the
-redirect URI is pinned to `localhost:8000`:
+When a login *is* genuinely needed — the refresh token was rejected — the
+cleanest answer is X forwarding:
+
+```bash
+ssh -X you@server        # ssh -Y from macOS, with XQuartz running
+```
+
+A browser installed on the server then renders on your local display, and the
+redirect to `localhost:8000` resolves on the server where the callback is
+listening — so no port forwarding is needed. `--browser firefox` names a
+specific one if the default pick is wrong.
+
+If there's no browser on that machine, forward the callback port instead and use
+your own:
 
 ```bash
 ssh -L 8000:localhost:8000 you@server
 ```
 
 Run `ipaapi` inside that session; it prints the authorization URL, you open it
-in your laptop's browser, and the redirect comes back down the tunnel.
+in your laptop's browser, and the redirect comes back down the tunnel. When no
+browser can be opened, the error says which of these applies — whether `DISPLAY`
+is unset, or set but with no browser found.
 
 Already have a token from elsewhere:
 
