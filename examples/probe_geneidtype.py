@@ -30,13 +30,12 @@ from ipaapi.errors import MalformedRequestError, SubmissionError
 # API need not share vocabulary, so these are still guesses -- but drawn from
 # IPA's own wording. 'genesymbol' is already known to be rejected.
 DEFAULT_CANDIDATES = (
-    "symbol",
-    "hugo",
     "hgnc",
     "entrezgene",
-    "genesymbolhuman",
-    "hugogenesymbol",
-    "genename",
+    "refseq",
+    "uniprot",
+    "genbank",
+    "mirbase",
 )
 
 

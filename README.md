@@ -56,7 +56,7 @@ ipaapi report abc-123 --open
 
 | Flag | Form | Meaning |
 | --- | --- | --- |
-| `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type |
+| `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type (`ensembl`, `hugo`) |
 | `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based fold-change column, measurement type, optional cutoff |
 | `--pattern` | `TEXT` | when PATH is a directory, which files to use (substring or glob) |
 | `--recursive` | flag | search subdirectories too |
@@ -221,6 +221,34 @@ abandoning the ones already uploaded.
 Because names come from filenames in batch mode, `--observation`,
 `--analysis-name` and `--dataset-name` only apply when a single file is
 selected. Use `--project` to group a batch.
+
+### Gene ID types
+
+IPA's accepted `geneidtype` vocabulary is **not documented publicly** and is not
+guessable from the interface. Values confirmed against the live API:
+
+| Value | Identifiers |
+| --- | --- |
+| `ensembl` | Ensembl gene IDs (`ENSG...`) |
+| `hugo` | human gene symbols |
+
+The desktop client labels that second one "Gene Symbol - human (HUGO / HGNC /
+Entrez Gene)" — and of those three names only `hugo` is accepted. Both
+`genesymbol` and `Gene Symbol` are rejected, so it is neither the compound word
+nor the client's own display label.
+
+An unrecognised type fails before anything is uploaded, and IPA names the value
+it rejected, so candidates can be tried cheaply:
+
+```
+REJECTED: IPA does not recognise the gene ID type 'genesymbol'.
+
+NOTHING WAS SUBMITTED.
+```
+
+`examples/probe_geneidtype.py` walks a candidate list against a two-row extract.
+Note that a type IPA *accepts* creates a real analysis and consumes allowance —
+there is no way to validate one without committing to it.
 
 ### Two identifier columns
 

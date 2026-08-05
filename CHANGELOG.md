@@ -6,6 +6,17 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.7 — 2026-08-05
+
+### Added
+
+- **`hugo` confirmed as a gene ID type** for human gene symbols, verified
+  against the live API. `CONFIRMED_ID_TYPES` is now `("ensembl", "hugo")`.
+  Of the three names in the desktop client's label "Gene Symbol - human
+  (HUGO / HGNC / Entrez Gene)", only the first is accepted — `genesymbol` and
+  `Gene Symbol` are both rejected.
+- README documents the confirmed vocabulary, since QIAGEN does not.
+
 ## 0.2.6 — 2026-08-05
 
 ### Changed

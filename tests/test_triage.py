@@ -357,6 +357,15 @@ def test_only_empirically_confirmed_id_types_are_advertised():
     """Listing guesses as 'common types' sent a user straight into a failure."""
     from ipaapi.cli import CONFIRMED_ID_TYPES, build_parser
 
-    assert CONFIRMED_ID_TYPES == ("ensembl",)
+    # Values observed to be accepted by IPA, and nothing else. Guesses in this
+    # list previously walked a user straight into a failed submission.
+    assert CONFIRMED_ID_TYPES == ("ensembl", "hugo")
+
+    from ipaapi.cli import CANDIDATE_ID_TYPES
+
+    # Anything confirmed or known-rejected must not linger among the guesses.
+    assert not set(CONFIRMED_ID_TYPES) & set(CANDIDATE_ID_TYPES)
+    assert "genesymbol" not in CANDIDATE_ID_TYPES
+
     help_text = build_parser().format_help()
     assert "genesymbol" not in help_text.split("confirmed to work")[0]

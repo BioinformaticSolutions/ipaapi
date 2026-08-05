@@ -33,11 +33,17 @@ _GLOB_CHARS = set("*?[")
 #: Gene identifier types confirmed to be accepted by IPA.
 #:
 #: Only values actually observed to work belong here. IPA's accepted vocabulary
-#: is not documented publicly and is narrower than the obvious names suggest --
-#: 'genesymbol', for instance, is rejected with "Unknown GeneId Type". Listing
-#: plausible-looking guesses here previously sent users straight into a failed
-#: submission, so the list stays empirical.
-CONFIRMED_ID_TYPES = ("ensembl",)
+#: is not documented publicly and is narrower than the obvious names suggest:
+#: both 'genesymbol' and 'Gene Symbol' are rejected with "Unknown GeneId Type",
+#: so it is neither the obvious compound word nor the desktop client's display
+#: label. Listing plausible-looking guesses here previously sent users straight
+#: into a failed submission, so the list stays strictly empirical.
+#:
+#: - ``ensembl`` -- Ensembl gene IDs (ENSG...), from QIAGEN's demo code.
+#: - ``hugo``    -- human gene symbols. The desktop client calls this column
+#:   type "Gene Symbol - human (HUGO / HGNC / Entrez Gene)"; of those three
+#:   names the API takes the first.
+CONFIRMED_ID_TYPES = ("ensembl", "hugo")
 
 #: Names worth trying, unverified. IPA validates server-side and names the value
 #: it rejected, so an unknown type fails fast and informatively.
@@ -48,19 +54,16 @@ CONFIRMED_ID_TYPES = ("ensembl",)
 #: not necessarily share vocabulary, so these remain guesses, but they are
 #: guesses drawn from IPA's own wording rather than from convention.
 CANDIDATE_ID_TYPES = (
-    "symbol",
-    "hugo",
     "hgnc",
     "entrezgene",
-    "genesymbolhuman",
-    "hugogenesymbol",
-    "genename",
     "refseq",
     "uniprot",
+    "genbank",
     "affymetrix",
     "illumina",
     "agilent",
     "unigene",
+    "mirbase",
 )
 
 _EPILOG = f"""\
@@ -72,9 +75,12 @@ where the primary is blank. Because IPA accepts one gene ID type per submission,
 rows filled from a second identifier of a different type are uploaded under the
 primary's type and may not map; the fill count is always reported.
 
-gene ID types confirmed to work: {', '.join(CONFIRMED_ID_TYPES)}
-IPA's accepted vocabulary is undocumented and narrower than it looks --
-'genesymbol' is rejected. An unknown type fails fast and IPA names it.
+gene ID types confirmed to work:
+  ensembl   Ensembl gene IDs (ENSG...)
+  hugo      human gene symbols -- the client calls this
+            "Gene Symbol - human (HUGO / HGNC / Entrez Gene)"
+IPA's vocabulary is undocumented and unobvious: 'genesymbol' and 'Gene Symbol'
+are both rejected. An unknown type fails fast and IPA names the value.
 measurement types for --FC: ratio, foldchange, logratio
 
 PATH may be a single file or a directory. Given a directory, --pattern selects
@@ -85,7 +91,7 @@ all of them are validated before any is uploaded.
 examples:
   ipaapi validate rnaseq.txt --ID 0:ensembl --FC 1:foldchange
   ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1
-  ipaapi submit rnaseq.txt --ID 0:ensembl --ID 4:genesymbol \\
+  ipaapi submit rnaseq.txt --ID 0:ensembl --ID 4:hugo \\
       --FC 1:foldchange --project Study1
 
   # every .txt/.tsv/.csv in a folder, one analysis each

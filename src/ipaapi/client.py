@@ -535,12 +535,13 @@ def _parameter_hint(body: str):
         rejected = match.group(1).strip()
         return (
             f"REJECTED: IPA does not recognise the gene ID type {rejected!r}.",
-            "That is the --ID flag: --ID COLUMN:TYPE. IPA's accepted vocabulary is "
-            "not documented publicly and is narrower than the obvious names "
-            "suggest -- 'ensembl' is confirmed to work, while 'genesymbol' and "
-            "'Gene Symbol' are both rejected, so it is not the desktop client's "
-            "label either. IPA names whatever value it rejects, so candidates can "
-            "be tried one at a time; examples/probe_geneidtype.py does that.\n"
+            "That is the --ID flag: --ID COLUMN:TYPE. Confirmed values: 'ensembl' "
+            "for Ensembl gene IDs, 'hugo' for human gene symbols. The vocabulary "
+            "is undocumented and unobvious -- 'genesymbol' and 'Gene Symbol' are "
+            "both rejected, so it is neither the compound word nor the desktop "
+            "client's display label. IPA names whatever value it rejects, so "
+            "candidates can be tried one at a time; examples/probe_geneidtype.py "
+            "does that.\n"
             "A type IPA *accepts* creates a real analysis and consumes allowance, "
             "so probe with a small file.",
         )
