@@ -30,18 +30,27 @@ TABLE_PATTERNS = ("*.txt", "*.tsv", "*.csv")
 
 _GLOB_CHARS = set("*?[")
 
-# Common IPA gene identifier types. IPA is the authority on what it accepts, so
-# these are offered as guidance rather than enforced -- an unrecognised type is
-# passed through and validated server-side.
-COMMON_ID_TYPES = (
-    "ensembl",
+#: Gene identifier types confirmed to be accepted by IPA.
+#:
+#: Only values actually observed to work belong here. IPA's accepted vocabulary
+#: is not documented publicly and is narrower than the obvious names suggest --
+#: 'genesymbol', for instance, is rejected with "Unknown GeneId Type". Listing
+#: plausible-looking guesses here previously sent users straight into a failed
+#: submission, so the list stays empirical.
+CONFIRMED_ID_TYPES = ("ensembl",)
+
+#: Names worth trying, unverified. IPA validates server-side and names the value
+#: it rejected, so an unknown type fails fast and informatively.
+CANDIDATE_ID_TYPES = (
     "entrezgene",
-    "genesymbol",
+    "symbol",
+    "genename",
+    "hgnc",
     "refseq",
-    "affymetrix",
-    "agilent",
-    "illumina",
     "uniprot",
+    "affymetrix",
+    "illumina",
+    "agilent",
     "unigene",
 )
 
@@ -54,7 +63,9 @@ where the primary is blank. Because IPA accepts one gene ID type per submission,
 rows filled from a second identifier of a different type are uploaded under the
 primary's type and may not map; the fill count is always reported.
 
-common ID types: {', '.join(COMMON_ID_TYPES)}
+gene ID types confirmed to work: {', '.join(CONFIRMED_ID_TYPES)}
+IPA's accepted vocabulary is undocumented and narrower than it looks --
+'genesymbol' is rejected. An unknown type fails fast and IPA names it.
 measurement types for --FC: ratio, foldchange, logratio
 
 PATH may be a single file or a directory. Given a directory, --pattern selects
@@ -131,8 +142,8 @@ def parse_id_spec(text: str) -> Tuple[int, str]:
     column, id_type = parts[0].strip(), parts[1].strip()
     if not id_type:
         raise argparse.ArgumentTypeError(
-            f"--ID {text!r} is missing the identifier type. "
-            f"Common types: {', '.join(COMMON_ID_TYPES)}."
+            f"--ID {text!r} is missing the identifier type, e.g. "
+            f"{text.rstrip(':')}:{CONFIRMED_ID_TYPES[0]}."
         )
     return _parse_index(column, "--ID"), id_type
 
@@ -391,6 +402,7 @@ def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
         type=parse_id_spec,
         metavar="COLUMN:TYPE",
         help="0-based identifier column and its IPA gene ID type, e.g. 0:ensembl. "
+        "IPA validates the type and names it if unrecognised. "
         "Give twice for a fallback identifier used where the primary is blank",
     )
     parser.add_argument(

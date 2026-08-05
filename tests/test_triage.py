@@ -319,3 +319,41 @@ def test_a_mapping_that_fails_every_file_moves_nothing(workdir):
     assert not (workdir / SUBMITTED_DIRNAME).exists()
     for name in ("a.txt", "b.txt", "c.txt"):
         assert (workdir / name).exists()
+
+
+def test_unknown_gene_id_type_is_named_and_pointed_at_the_right_flag():
+    """IPA names the value it rejected; the error should say what to do with that."""
+    from ipaapi.errors import MalformedRequestError
+
+    body = (
+        "<html><head><title>Error | IPA</title></head><body>"
+        "Error &nbsp; If you continue to experience this problem, please Send a "
+        "Report ... &nbsp; Unknown GeneId Type (genesymbol) </body></html>"
+    )
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
+    except MalformedRequestError as exc:
+        message = str(exc)
+    assert "does not recognise the gene ID type 'genesymbol'" in message
+    assert "--ID COLUMN:TYPE" in message
+    assert "consumes allowance" in message      # probing is not free
+    assert "--reference-set" not in message     # don't misdirect
+
+
+def test_other_html_errors_keep_the_generic_advice():
+    from ipaapi.errors import MalformedRequestError
+
+    body = "<html><body>Something else went wrong</body></html>"
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
+    except MalformedRequestError as exc:
+        assert "--reference-set and --ID type are the usual culprits" in str(exc)
+
+
+def test_only_empirically_confirmed_id_types_are_advertised():
+    """Listing guesses as 'common types' sent a user straight into a failure."""
+    from ipaapi.cli import CONFIRMED_ID_TYPES, build_parser
+
+    assert CONFIRMED_ID_TYPES == ("ensembl",)
+    help_text = build_parser().format_help()
+    assert "genesymbol" not in help_text.split("confirmed to work")[0]

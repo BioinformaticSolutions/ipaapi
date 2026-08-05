@@ -6,6 +6,25 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.4 — 2026-08-05
+
+### Fixed
+
+- **Stopped advertising unverified gene ID types.** The help text listed nine
+  "common" identifier types that were guesses. `genesymbol` is among the ones
+  IPA rejects — "Unknown GeneId Type (genesymbol)" — so the list sent users
+  straight into a failed submission. Only `ensembl` is confirmed, and
+  `CONFIRMED_ID_TYPES` now holds only values observed to work.
+
+### Added
+
+- **An unrecognised gene ID type is named and explained.** IPA identifies the
+  value it rejected in its error page; the message now quotes it, points at the
+  `--ID` flag specifically rather than offering a list of suspects, and notes
+  that probing costs allowance whenever a candidate is *accepted*.
+- `examples/probe_geneidtype.py` tries candidate type strings against a
+  two-row extract and stops at the first IPA accepts.
+
 ## 0.2.3 — 2026-08-05
 
 ### Fixed

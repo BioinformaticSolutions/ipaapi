@@ -519,6 +519,31 @@ def _summarise_html_error(body: str) -> str:
     return "; ".join(parts) or "an HTML error page with no readable content"
 
 
+#: IPA names the offending value in its error page; catching that turns a
+#: generic "something was wrong" into an actionable message.
+_UNKNOWN_ID_TYPE = re.compile(r"Unknown\s+GeneId\s+Type\s*\(([^)]*)\)", re.IGNORECASE)
+
+
+def _parameter_hint(body: str) -> str:
+    """Point at the specific flag when IPA identifies the bad parameter."""
+    match = _UNKNOWN_ID_TYPE.search(body or "")
+    if match:
+        rejected = match.group(1).strip()
+        return (
+            f"\n\nIPA does not recognise the gene ID type {rejected!r}. That is the "
+            "--ID flag: --ID COLUMN:TYPE. The accepted vocabulary is not documented "
+            "publicly and is narrower than the obvious names suggest -- 'ensembl' is "
+            "confirmed to work. IPA names the value it rejected, so candidates can be "
+            "tried one at a time; examples/probe_geneidtype.py does that.\n"
+            "Note that a type IPA *accepts* creates a real analysis and consumes "
+            "allowance, so probe with a small file."
+        )
+    return (
+        "\nCheck the submission parameters -- --reference-set and --ID type are "
+        "the usual culprits."
+    )
+
+
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
     """Raise the most specific submission error the response supports."""
     excerpt = body[:2000]
@@ -529,9 +554,7 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
             "with an HTML error page where the API returns plain text. That "
             "means a parameter was not accepted, so every file in this batch "
             "would fail the same way.\n"
-            f"IPA returned {_summarise_html_error(body)}\n"
-            "Check the submission parameters -- --reference-set and --ID type "
-            "are the usual culprits.",
+            f"IPA returned {_summarise_html_error(body)}" + _parameter_hint(body),
             status_code=status_code,
             body=excerpt,
         )
