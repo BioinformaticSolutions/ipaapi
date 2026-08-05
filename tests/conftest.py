@@ -43,3 +43,24 @@ def two_obs_mapping():
             ),
         ],
     )
+
+
+_ROWS = "id\tfc\nENSG1\t2.0\nENSG2\t-3.0\n"
+
+
+@pytest.fixture
+def tree():
+    """A scratch directory of dataset files, some of which should be ignored."""
+    import pathlib
+    import tempfile
+
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "SampleA_DEG.txt").write_text(_ROWS)
+    (tmp / "SampleB_DEG.txt").write_text(_ROWS)
+    (tmp / "SampleA_raw.tsv").write_text(_ROWS)
+    (tmp / "notes.md").write_text("not a table")
+    (tmp / ".hidden.txt").write_text(_ROWS)
+    nested = tmp / "groupB"
+    nested.mkdir()
+    (nested / "SampleC_DEG.txt").write_text(_ROWS)
+    return tmp

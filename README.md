@@ -55,6 +55,55 @@ ipaapi report abc-123 --open
 | --- | --- | --- |
 | `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type |
 | `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based fold-change column, measurement type, optional cutoff |
+| `--pattern` | `TEXT` | when PATH is a directory, which files to use (substring or glob) |
+| `--recursive` | flag | search subdirectories too |
+
+### Many files at once
+
+`PATH` may be a directory instead of a file. `--pattern` picks which files in it
+to use, and each matched file becomes its own dataset and its own analysis,
+named after the file:
+
+```bash
+# every .txt / .tsv / .csv in the folder
+ipaapi submit ~/data --ID 0:ensembl --FC 1:foldchange --project Study1
+
+# only files whose name contains "SampleA"
+ipaapi submit ~/data --pattern SampleA --ID 0:ensembl --FC 1:foldchange --project Study1
+
+# glob syntax, searching subfolders too
+ipaapi submit ~/data --pattern "*_DEG.tsv" --recursive \
+    --ID 0:ensembl --FC 1:foldchange --project GroupB
+```
+
+`--pattern` takes plain search text or a glob. Text with no `*`, `?` or `[`
+matches as a **substring**, so `--pattern SampleA` finds `SampleA_DEG.txt` and
+`SampleA_raw.tsv`. Text containing glob characters is used verbatim. With no
+`--pattern`, the common delimited-text extensions are searched. Hidden files are
+skipped; results are sorted so run order is predictable.
+
+Every matched file must fit the same `--ID`/`--FC` column positions. **All files
+are validated before any is uploaded**, so a bad file at position 7 of 10 fails
+the run without leaving six analyses stranded in your project:
+
+```
+error: 1 of 3 file(s) do not fit the mapping, so nothing was uploaded:
+  - SampleZ_DEG.txt: --FC refers to column 1, but the file has only 1 column(s) ...
+```
+
+Run `validate` first to see exactly what matched:
+
+```bash
+ipaapi validate ~/data --pattern SampleA --ID 0:ensembl --FC 1:foldchange
+```
+
+If a *submission* fails partway through a batch (a network drop, say), the run
+continues with the remaining files and reports which ones failed, rather than
+abandoning the ones already uploaded.
+
+Because names come from filenames in batch mode, `--observation`,
+`--analysis-name` and `--dataset-name` only apply when a single file is
+selected. Use `--project` to group a batch.
 
 ### Two identifier columns
 

@@ -11,6 +11,8 @@ Column positions are **0-based**: ``--ID 0`` is the first column in the file.
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import pathlib
 import sys
 from typing import List, Optional, Sequence, Tuple
 
@@ -21,6 +23,11 @@ from .mapping import ColumnMapping, Measurement, Observation
 from .models import MeasurementType, ReferenceSet
 
 __all__ = ["main"]
+
+#: Extensions searched in a directory when no --pattern is given.
+TABLE_PATTERNS = ("*.txt", "*.tsv", "*.csv")
+
+_GLOB_CHARS = set("*?[")
 
 # Common IPA gene identifier types. IPA is the authority on what it accepts, so
 # these are offered as guidance rather than enforced -- an unrecognised type is
@@ -49,11 +56,27 @@ primary's type and may not map; the fill count is always reported.
 common ID types: {', '.join(COMMON_ID_TYPES)}
 measurement types for --FC: ratio, foldchange, logratio
 
+PATH may be a single file or a directory. Given a directory, --pattern selects
+which files to use and each matched file is submitted as its own dataset and
+analysis, named after the file. Every file must fit the same --ID/--FC layout;
+all of them are validated before any is uploaded.
+
 examples:
   ipaapi validate rnaseq.txt --ID 0:ensembl --FC 1:foldchange
   ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1
   ipaapi submit rnaseq.txt --ID 0:ensembl --ID 4:genesymbol \\
       --FC 1:foldchange --project Study1
+
+  # every .txt/.tsv/.csv in a folder, one analysis each
+  ipaapi submit ~/data --ID 0:ensembl --FC 1:foldchange --project Study1
+
+  # only files whose name contains SampleA
+  ipaapi validate ~/data --pattern SampleA --ID 0:ensembl --FC 1:foldchange
+
+  # glob, searching subfolders too
+  ipaapi submit ~/data --pattern "*_DEG.tsv" --recursive \\
+      --ID 0:ensembl --FC 1:foldchange --project GroupB
+
   ipaapi status abc-123 abc-124
   ipaapi report abc-123 --open
 """
@@ -193,34 +216,144 @@ def build_mapping(
     )
 
 
-def _load(args) -> Dataset:
-    """Read the file, build the mapping from the specs, and validate."""
-    frame = load_table(args.dataset, sep=args.sep)
-    mapping = build_mapping(
-        columns=list(frame.columns),
-        id_specs=args.ID,
-        fc_spec=args.FC,
-        observation_name=getattr(args, "observation", None),
+# -- file discovery --------------------------------------------------------
+
+
+def expand_pattern(pattern: Optional[str]) -> List[str]:
+    """Turn a ``--pattern`` value into fnmatch patterns.
+
+    Plain search text with no glob characters is treated as a substring, so
+    ``--pattern SampleA`` matches ``SampleA_DEG.txt``. Anything containing
+    ``*``, ``?`` or ``[`` is used verbatim. With no pattern at all, the common
+    delimited-text extensions are searched.
+    """
+    if pattern is None:
+        return list(TABLE_PATTERNS)
+    pattern = pattern.strip()
+    if not pattern:
+        return list(TABLE_PATTERNS)
+    if any(char in pattern for char in _GLOB_CHARS):
+        return [pattern]
+    return [f"*{pattern}*"]
+
+
+def discover_files(
+    path: str, pattern: Optional[str] = None, recursive: bool = False
+) -> List[pathlib.Path]:
+    """Return the files to submit, sorted for a predictable run order.
+
+    *path* may be a single file, in which case it is returned as-is, or a
+    directory to search.
+    """
+    root = pathlib.Path(path).expanduser()
+    if root.is_file():
+        return [root]
+    if not root.exists():
+        raise IPAError(f"No such file or directory: {str(root)!r}")
+    if not root.is_dir():
+        raise IPAError(f"Not a readable file or directory: {str(root)!r}")
+
+    patterns = expand_pattern(pattern)
+    candidates = root.rglob("*") if recursive else root.glob("*")
+    matched = sorted(
+        candidate
+        for candidate in candidates
+        if candidate.is_file()
+        and not candidate.name.startswith(".")
+        and any(fnmatch.fnmatch(candidate.name, pat) for pat in patterns)
     )
-    return Dataset.from_frame(
-        frame,
-        mapping,
-        name=getattr(args, "dataset_name", None) or _stem(args.dataset),
-        check_ranges=not args.no_range_check,
-    )
+
+    if not matched:
+        present = sorted(
+            child.name for child in root.iterdir() if child.is_file()
+        )[:10]
+        raise IPAError(
+            f"No files in {str(root)!r} matched {', '.join(repr(p) for p in patterns)}"
+            + (" (searched recursively)" if recursive else "")
+            + (
+                "\nFiles present: " + ", ".join(repr(n) for n in present)
+                if present
+                else "\nThe directory contains no files."
+            )
+            + ("\nUse --recursive to search subdirectories." if not recursive else "")
+        )
+    return matched
 
 
-def _stem(path: str) -> str:
-    import os
+# -- dataset loading -------------------------------------------------------
 
-    return os.path.splitext(os.path.basename(str(path)))[0]
+_SINGLE_FILE_FLAGS = ("observation", "analysis_name", "dataset_name")
+
+
+def _load_datasets(args) -> List[Dataset]:
+    """Discover files, build the mapping for each, and validate them all.
+
+    Every file is checked before any of them is uploaded, so a bad file in the
+    middle of a batch does not leave half the analyses submitted.
+    """
+    paths = discover_files(args.path, getattr(args, "pattern", None), getattr(args, "recursive", False))
+
+    if len(paths) > 1:
+        for attr in _SINGLE_FILE_FLAGS:
+            if getattr(args, attr, None):
+                flag = "--" + attr.replace("_", "-")
+                raise IPAError(
+                    f"{flag} applies to a single file, but {len(paths)} files matched. "
+                    "Names are taken from each filename; use --project to group them."
+                )
+
+    datasets: List[Dataset] = []
+    problems: List[str] = []
+    for path in paths:
+        try:
+            frame = load_table(path, sep=args.sep)
+            mapping = build_mapping(
+                columns=list(frame.columns),
+                id_specs=args.ID,
+                fc_spec=args.FC,
+                observation_name=getattr(args, "observation", None) or path.stem,
+            )
+            datasets.append(
+                Dataset.from_frame(
+                    frame,
+                    mapping,
+                    name=getattr(args, "dataset_name", None) or path.stem,
+                    check_ranges=not args.no_range_check,
+                )
+            )
+        except IPAError as exc:
+            problems.append(f"{path.name}: {exc}")
+
+    if problems:
+        raise IPAError(
+            f"{len(problems)} of {len(paths)} file(s) do not fit the mapping, so "
+            "nothing was uploaded:\n  - " + "\n  - ".join(problems)
+        )
+    return datasets
 
 
 # -- shared arguments ------------------------------------------------------
 
 
 def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("dataset", help="path to the delimited dataset file")
+    parser.add_argument(
+        "path",
+        help="a delimited dataset file, or a directory to search for them",
+    )
+    parser.add_argument(
+        "--pattern",
+        default=None,
+        metavar="TEXT",
+        help="when PATH is a directory, only use files matching this. Plain text "
+        "matches as a substring (SampleA finds SampleA_DEG.txt); text containing "
+        "* ? or [ is treated as a glob. Default: "
+        + ", ".join(TABLE_PATTERNS),
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="search subdirectories of PATH as well",
+    )
     parser.add_argument(
         "--ID",
         action="append",
@@ -246,7 +379,7 @@ def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--observation",
         default=None,
-        help="observation name shown in IPA (default: the fold-change column header)",
+        help="observation name shown in IPA (default: the filename). Single file only",
     )
     parser.add_argument(
         "--no-range-check",
@@ -280,39 +413,68 @@ def _client(args):
 
 
 def cmd_validate(args) -> int:
-    """Check the mapping against the file without contacting IPA."""
-    dataset = _load(args)
-    print(dataset.describe())
-    print()
-    print(dataset.preview())
-    print("\nMapping is valid. Nothing was uploaded.")
+    """Check the mapping against the file(s) without contacting IPA."""
+    datasets = _load_datasets(args)
+    for index, dataset in enumerate(datasets):
+        if index:
+            print()
+        print(dataset.describe())
+        if len(datasets) == 1:
+            print()
+            print(dataset.preview())
+    noun = "file" if len(datasets) == 1 else "files"
+    print(f"\n{len(datasets)} {noun} valid. Nothing was uploaded.")
     return 0
 
 
 def cmd_submit(args) -> int:
-    """Upload the dataset into a project and start the analysis."""
-    dataset = _load(args)
-    print(dataset.describe())
+    """Upload the dataset(s) into a project and start the analyses."""
+    datasets = _load_datasets(args)
+    for index, dataset in enumerate(datasets):
+        if index:
+            print()
+        print(dataset.describe())
 
     if args.dry_run:
-        print("\nDry run: mapping is valid; stopping before login.")
+        noun = "file" if len(datasets) == 1 else "files"
+        print(f"\nDry run: {len(datasets)} {noun} valid; stopping before login.")
         return 0
 
     client = _client(args)
-    analysis_ids = client.submit(
-        dataset,
-        project=args.project,
-        analysis_name=args.analysis_name,
-        reference_set=args.reference_set,
-    )
-    print(f"\nSubmitted: {', '.join(analysis_ids)}")
+
+    analysis_ids: List[str] = []
+    failures: List[str] = []
+    for dataset in datasets:
+        try:
+            submitted = client.submit(
+                dataset,
+                project=args.project,
+                analysis_name=args.analysis_name,
+                dataset_name=args.dataset_name,
+                reference_set=args.reference_set,
+            )
+        except IPAError as exc:
+            # Keep going: a later file failing should not strand earlier ones.
+            failures.append(f"{dataset.name}: {exc}")
+            print(f"FAILED {dataset.name}: {exc}", file=sys.stderr)
+            continue
+        analysis_ids.extend(submitted)
+        print(f"submitted {dataset.name}: {', '.join(submitted)}")
+
+    if not analysis_ids:
+        print("\nNothing was submitted successfully.", file=sys.stderr)
+        return 1
+
+    print(f"\nSubmitted {len(analysis_ids)} analysis/analyses.")
+    if failures:
+        print(f"{len(failures)} of {len(datasets)} file(s) failed to submit.", file=sys.stderr)
 
     if args.no_wait:
         print("Not waiting. Check progress with: ipaapi status " + " ".join(analysis_ids))
-        return 0
+        return 1 if failures else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
-    exit_code = 0
+    exit_code = 1 if failures else 0
     for analysis_id, status in statuses.items():
         print(f"{analysis_id}: {status.name.lower()}")
         if status.succeeded:

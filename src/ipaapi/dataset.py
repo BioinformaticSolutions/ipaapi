@@ -165,7 +165,10 @@ class Dataset:
 
     def describe(self) -> str:
         """Summarise the dataset and its mapping in one printable block."""
-        head = f"{self.name or 'dataset'}: {self.n_genes:,} rows"
+        head = (
+            f"{self.name or 'dataset'}: {self.n_genes:,} "
+            f"{'row' if self.n_genes == 1 else 'rows'}"
+        )
         body = head + "\n" + self.mapping.describe()
         for note in self.id_warnings:
             body += f"\nWarning: {note}"
