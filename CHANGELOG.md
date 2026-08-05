@@ -6,6 +6,18 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.2.6 — 2026-08-05
+
+### Changed
+
+- **Rejection messages lead with what was rejected.** The explanation used to
+  come first and the actual cause several lines down, which is easy to skim
+  past and read as success. The first line is now
+  `REJECTED: IPA does not recognise the gene ID type 'X'.`, followed by
+  `NOTHING WAS SUBMITTED.`, with the reasoning below that.
+- Recorded that `Gene Symbol` is rejected as well as `genesymbol` — so the API
+  does not take the desktop client's display label either.
+
 ## 0.2.5 — 2026-08-05
 
 ### Changed

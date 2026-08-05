@@ -334,7 +334,9 @@ def test_unknown_gene_id_type_is_named_and_pointed_at_the_right_flag():
         IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
     except MalformedRequestError as exc:
         message = str(exc)
-    assert "does not recognise the gene ID type 'genesymbol'" in message
+    assert message.startswith("REJECTED: IPA does not recognise the gene ID type")
+    assert "'genesymbol'" in message
+    assert "NOTHING WAS SUBMITTED" in message
     assert "--ID COLUMN:TYPE" in message
     assert "consumes allowance" in message      # probing is not free
     assert "--reference-set" not in message     # don't misdirect
@@ -347,7 +349,8 @@ def test_other_html_errors_keep_the_generic_advice():
     try:
         IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
     except MalformedRequestError as exc:
-        assert "--reference-set and --ID type are the usual culprits" in str(exc)
+        assert str(exc).startswith("REJECTED:")
+        assert "--reference-set and the --ID type are the usual culprits" in str(exc)
 
 
 def test_only_empirically_confirmed_id_types_are_advertised():

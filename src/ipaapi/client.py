@@ -524,23 +524,30 @@ def _summarise_html_error(body: str) -> str:
 _UNKNOWN_ID_TYPE = re.compile(r"Unknown\s+GeneId\s+Type\s*\(([^)]*)\)", re.IGNORECASE)
 
 
-def _parameter_hint(body: str) -> str:
-    """Point at the specific flag when IPA identifies the bad parameter."""
+def _parameter_hint(body: str):
+    """Return ``(headline, detail)`` naming the parameter IPA objected to.
+
+    The headline is deliberately short and unambiguous, because it is the line
+    a reader scanning a wall of error text will actually take in.
+    """
     match = _UNKNOWN_ID_TYPE.search(body or "")
     if match:
         rejected = match.group(1).strip()
         return (
-            f"\n\nIPA does not recognise the gene ID type {rejected!r}. That is the "
-            "--ID flag: --ID COLUMN:TYPE. The accepted vocabulary is not documented "
-            "publicly and is narrower than the obvious names suggest -- 'ensembl' is "
-            "confirmed to work. IPA names the value it rejected, so candidates can be "
-            "tried one at a time; examples/probe_geneidtype.py does that.\n"
-            "Note that a type IPA *accepts* creates a real analysis and consumes "
-            "allowance, so probe with a small file."
+            f"REJECTED: IPA does not recognise the gene ID type {rejected!r}.",
+            "That is the --ID flag: --ID COLUMN:TYPE. IPA's accepted vocabulary is "
+            "not documented publicly and is narrower than the obvious names "
+            "suggest -- 'ensembl' is confirmed to work, while 'genesymbol' and "
+            "'Gene Symbol' are both rejected, so it is not the desktop client's "
+            "label either. IPA names whatever value it rejects, so candidates can "
+            "be tried one at a time; examples/probe_geneidtype.py does that.\n"
+            "A type IPA *accepts* creates a real analysis and consumes allowance, "
+            "so probe with a small file.",
         )
     return (
-        "\nCheck the submission parameters -- --reference-set and --ID type are "
-        "the usual culprits."
+        "REJECTED: IPA would not accept one of the submission parameters.",
+        "--reference-set and the --ID type are the usual culprits. The response "
+        "below is the only description IPA gives.",
     )
 
 
@@ -549,12 +556,18 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
     excerpt = body[:2000]
 
     if looks_like_html(body):
+        # Lead with what IPA actually objected to. Burying it under the
+        # explanation invites the reader to skim and conclude it worked.
+        headline, detail = _parameter_hint(body)
         raise MalformedRequestError(
-            "IPA rejected the request itself rather than the data: it answered "
-            "with an HTML error page where the API returns plain text. That "
-            "means a parameter was not accepted, so every file in this batch "
-            "would fail the same way.\n"
-            f"IPA returned {_summarise_html_error(body)}" + _parameter_hint(body),
+            headline
+            + "\n\nNOTHING WAS SUBMITTED.\n\n"
+            + detail
+            + "\n\nIPA answered with an HTML error page where the API returns "
+            "plain text, which means the request was rejected before reaching "
+            "the analysis logic -- so every file in this batch would fail the "
+            "same way.\n"
+            f"Full response: {_summarise_html_error(body)}",
             status_code=status_code,
             body=excerpt,
         )
