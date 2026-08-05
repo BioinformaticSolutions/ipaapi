@@ -57,6 +57,34 @@ ipaapi report abc-123 --open
 | `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based fold-change column, measurement type, optional cutoff |
 | `--pattern` | `TEXT` | when PATH is a directory, which files to use (substring or glob) |
 | `--recursive` | flag | search subdirectories too |
+| `--skip-rows` | `N` | discard N lines above the header row |
+| `--sep` | `CHAR` | field delimiter (sniffed from the header line by default) |
+
+### Comment lines above the header
+
+Files often carry a provenance or title line before the real header:
+
+```
+# RNAseq DE results, pipeline v3, run 2026-08-05
+EnsemblID	log2FC	pval
+ENSG001	2.4	0.01
+```
+
+`--skip-rows N` discards those lines:
+
+```bash
+ipaapi validate SampleA_DEG.txt --skip-rows 1 --ID 0:ensembl --FC 1:logratio
+```
+
+Column numbers always count from the **header row**, so they don't change when
+you add `--skip-rows` — in the file above `EnsemblID` is column 0 either way.
+
+Skipping also fixes delimiter detection. The delimiter is sniffed from the
+header line, and a comment line is a bad thing to sniff: the one above contains
+commas but no tabs, so without `--skip-rows` the file would be read as CSV and
+collapse into two nonsense columns. Rather than let that through, a header that
+looks like a comment (or a file that parses to a single column) is rejected with
+a message pointing at this flag.
 
 ### Many files at once
 

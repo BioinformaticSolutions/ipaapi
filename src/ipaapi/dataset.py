@@ -18,22 +18,37 @@ __all__ = ["Dataset", "load_table"]
 PathLike = Union[str, "os.PathLike[str]"]
 
 
-def _sniff_separator(path: PathLike, default: str = "\t") -> str:
-    """Guess the delimiter of a delimited text file from its first line."""
+def _sniff_separator(path: PathLike, default: str = "\t", skip_rows: int = 0) -> str:
+    """Guess the delimiter from the header line.
+
+    *skip_rows* lines of preamble are stepped over first, so a comment or title
+    line above the header does not get sniffed by mistake.
+    """
     try:
         with open(path, "r", newline="", encoding="utf-8-sig", errors="replace") as fh:
+            for _ in range(skip_rows):
+                if fh.readline() == "":
+                    raise MappingError(
+                        f"{str(path)!r} has fewer than {skip_rows + 1} lines, so there "
+                        "is no header row left after --skip-rows."
+                    )
             sample = fh.readline()
     except OSError as exc:
-        raise MappingError(f"Could not read {path!r}: {exc}") from exc
+        raise MappingError(f"Could not read {str(path)!r}: {exc}") from exc
     if not sample:
-        raise MappingError(f"{path!r} appears to be empty.")
+        raise MappingError(f"{str(path)!r} appears to be empty.")
     try:
         return csv.Sniffer().sniff(sample, delimiters="\t,;|").delimiter
     except csv.Error:
         return default
 
 
-def load_table(path: PathLike, sep: Optional[str] = None, **read_csv_kwargs) -> "pd.DataFrame":
+def load_table(
+    path: PathLike,
+    sep: Optional[str] = None,
+    skip_rows: int = 0,
+    **read_csv_kwargs,
+) -> "pd.DataFrame":
     """Read a delimited text file into a DataFrame with a real header row.
 
     Unlike the original demo, which read the file with ``header=None`` and then
@@ -42,21 +57,61 @@ def load_table(path: PathLike, sep: Optional[str] = None, **read_csv_kwargs) -> 
 
     Args:
         path: File to read.
-        sep: Field delimiter. Sniffed from the first line when omitted.
+        sep: Field delimiter. Sniffed from the header line when omitted.
+        skip_rows: Number of lines to discard before the header row, for files
+            that carry a comment, title or provenance block above it.
         **read_csv_kwargs: Passed through to :func:`pandas.read_csv`.
     """
     import pandas as pd
 
+    if skip_rows < 0:
+        raise MappingError("skip_rows cannot be negative.")
     if sep is None:
-        sep = _sniff_separator(path)
+        sep = _sniff_separator(path, skip_rows=skip_rows)
     read_csv_kwargs.setdefault("dtype", object)
     read_csv_kwargs.setdefault("encoding", "utf-8-sig")
+    if skip_rows:
+        read_csv_kwargs.setdefault("skiprows", skip_rows)
     try:
         frame = pd.read_csv(path, sep=sep, **read_csv_kwargs)
     except Exception as exc:  # pandas raises a wide variety of parse errors
-        raise MappingError(f"Could not parse {path!r} as a table: {exc}") from exc
+        raise MappingError(f"Could not parse {str(path)!r} as a table: {exc}") from exc
     frame.columns = [str(c).strip() for c in frame.columns]
+
+    if not skip_rows:
+        _warn_if_header_looks_wrong(path, frame)
     return frame
+
+
+#: Line prefixes that mark a comment in the formats these tables arrive in.
+_COMMENT_PREFIXES = ("#", "//", ";", "!")
+
+
+def _warn_if_header_looks_wrong(path: PathLike, frame: "pd.DataFrame") -> None:
+    """Raise if the row taken as the header is obviously not one.
+
+    A comment or title line above the real header is common, and the failure is
+    otherwise silent and confusing: the delimiter gets sniffed from the comment,
+    the comment becomes the column names, and the real header becomes data.
+    """
+    first = str(frame.columns[0]).strip()
+    looks_like_comment = first.startswith(_COMMENT_PREFIXES)
+    single_column = len(frame.columns) == 1
+
+    if not (looks_like_comment or single_column):
+        return
+
+    reason = (
+        f"the header row reads {first!r}, which looks like a comment"
+        if looks_like_comment
+        else f"the file parsed as a single column ({first!r})"
+    )
+    raise MappingError(
+        f"Could not find a header row in {str(path)!r}: {reason}.\n"
+        "If the file has comment or title lines above the header, skip them with "
+        "--skip-rows N (skip_rows=N from Python). If the delimiter is unusual, "
+        "set it with --sep."
+    )
 
 
 @dataclass
@@ -84,14 +139,18 @@ class Dataset:
         sep: Optional[str] = None,
         name: Optional[str] = None,
         check_ranges: bool = True,
+        skip_rows: int = 0,
         **read_csv_kwargs,
     ) -> "Dataset":
         """Load *path* and validate *mapping* against it.
 
         The dataset name defaults to the file stem, matching IPA's own habit of
         naming a dataset after the file it came from.
+
+        Args:
+            skip_rows: Lines of preamble above the header row to discard.
         """
-        frame = load_table(path, sep=sep, **read_csv_kwargs)
+        frame = load_table(path, sep=sep, skip_rows=skip_rows, **read_csv_kwargs)
         if name is None:
             name = os.path.splitext(os.path.basename(str(path)))[0]
         return cls.from_frame(frame, mapping, name=name, check_ranges=check_ranges)

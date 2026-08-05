@@ -306,7 +306,7 @@ def _load_datasets(args) -> List[Dataset]:
     problems: List[str] = []
     for path in paths:
         try:
-            frame = load_table(path, sep=args.sep)
+            frame = load_table(path, sep=args.sep, skip_rows=args.skip_rows)
             mapping = build_mapping(
                 columns=list(frame.columns),
                 id_specs=args.ID,
@@ -374,7 +374,15 @@ def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sep",
         default=None,
-        help="field delimiter; sniffed from the first line when omitted",
+        help="field delimiter; sniffed from the header line when omitted",
+    )
+    parser.add_argument(
+        "--skip-rows",
+        type=int,
+        default=0,
+        metavar="N",
+        help="discard N lines before the header row, for files with a comment "
+        "or title line above it. Column numbers still count from the header",
     )
     parser.add_argument(
         "--observation",
