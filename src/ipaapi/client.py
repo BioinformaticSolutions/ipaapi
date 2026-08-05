@@ -184,6 +184,9 @@ class IPAClient:
             SubmissionError: If IPA rejects the submission or returns something
                 that is not a list of analysis IDs.
         """
+        for note in dataset.id_warnings:
+            print(f"Warning: {note}")
+
         effective_dataset_name = dataset_name or dataset.name or "dataset"
         reference = (
             reference_set.value

@@ -123,17 +123,16 @@ def build_submission_pairs(
         if cutoff is not None:
             pairs.append((_slot_key("cutoff", k), f"{cutoff:g}"))
 
-    # Pull the columns out once, in submission order, then walk rows. Using
-    # itertuples over a reduced frame keeps this workable on large datasets.
-    ordered_columns = [mapping.gene_id_column] + mapping.value_columns
-    reduced = frame.loc[:, ordered_columns]
+    # Identifiers may be coalesced from a fallback column; values are taken in
+    # canonical submission order. itertuples keeps this workable on large files.
+    gene_ids, _ = mapping.resolve_gene_ids(frame)
+    values = frame.loc[:, mapping.value_columns]
     n_slots = len(types)
 
-    for row in reduced.itertuples(index=False, name=None):
-        pairs.append(("geneid", _format(row[0])))
-        for offset in range(1, len(row)):
-            slot = (offset - 1) % n_slots
-            pairs.append((_value_key(slot), _format(row[offset])))
+    for gene_id, row in zip(gene_ids.tolist(), values.itertuples(index=False, name=None)):
+        pairs.append(("geneid", _format(gene_id)))
+        for offset, value in enumerate(row):
+            pairs.append((_value_key(offset % n_slots), _format(value)))
 
     return pairs
 

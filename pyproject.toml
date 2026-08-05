@@ -22,6 +22,9 @@ dependencies = [
     "pandas>=1.5",
 ]
 
+[project.scripts]
+ipaapi = "ipaapi.cli:main"
+
 [project.optional-dependencies]
 progress = ["tqdm>=4.64"]
 dev = ["pytest>=7.0"]

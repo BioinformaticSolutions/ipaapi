@@ -26,6 +26,67 @@ pip install -e .
 
 Requires Python 3.9+, `requests`, `requests-oauthlib`, `pandas`.
 
+## Command line
+
+Installing puts `ipaapi` on your PATH:
+
+```bash
+ipaapi --help
+ipaapi submit --help
+```
+
+Column positions are **0-based** — `--ID 0` is the first column in the file.
+
+```bash
+# check a mapping without contacting IPA
+ipaapi validate rnaseq.txt --ID 0:ensembl --FC 1:foldchange
+
+# upload into a project and start the analysis
+ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1
+
+# check on / fetch links for existing analyses
+ipaapi status abc-123 abc-124
+ipaapi report abc-123 --open
+```
+
+`--ID` and `--FC` are required.
+
+| Flag | Form | Meaning |
+| --- | --- | --- |
+| `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type |
+| `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based fold-change column, measurement type, optional cutoff |
+
+### Two identifier columns
+
+`--ID` may be given twice. The first is the **primary**; the second is used only
+for rows where the primary is blank:
+
+```bash
+ipaapi submit rnaseq.txt --ID 0:ensembl --ID 4:genesymbol \
+    --FC 1:foldchange --project Study1
+```
+
+> **Read this before relying on it.** IPA accepts a *single* `geneidtype` per
+> submission. Rows filled from a second identifier of a different type are still
+> uploaded under the primary's type declaration, so IPA may fail to map them.
+> The package always reports how many rows were filled:
+>
+> ```
+> Warning: 1 of 4 rows took their identifier from the fallback column 'Symbol'
+> (genesymbol). IPA is told a single gene ID type for the submission --
+> 'ensembl' -- so those rows are uploaded under that declaration and may not map.
+> ```
+>
+> If that number is large, consider `--ID` with the type that covers most rows,
+> or submit twice, once per identifier type.
+
+Rows where *both* identifiers are blank are reported separately; if every row
+lacks an identifier the run aborts, which usually means the column number is
+wrong or the file has no header row.
+
+Only identifier and fold-change columns are exposed on the command line. For
+p-values, FDR, intensity, or multiple observations, use the Python API below.
+
 ## Quick start
 
 ```python
@@ -185,6 +246,7 @@ src/ipaapi/
   _payload.py    multiobsanalysis body construction
   auth.py        OAuth 2.0 + PKCE login, Credentials, TokenCache
   client.py      IPAClient, AnalysisResults
+  cli.py         ipaapi console script
   errors.py      exception hierarchy
 tests/           offline unit tests (no network required)
 examples/        runnable end-to-end script

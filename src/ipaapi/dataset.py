@@ -71,6 +71,10 @@ class Dataset:
     frame: "pd.DataFrame"
     mapping: ColumnMapping
     name: Optional[str] = None
+    #: Rows whose identifier came from the fallback column.
+    gene_ids_filled: int = 0
+    #: Rows left with no usable identifier at all.
+    gene_ids_missing: int = 0
 
     @classmethod
     def from_file(
@@ -104,7 +108,48 @@ class Dataset:
         mapping.validate(frame, check_ranges=check_ranges)
         if len(frame) == 0:
             raise MappingError("Dataset contains no rows.")
-        return cls(frame=frame, mapping=mapping, name=name)
+        resolved, filled = mapping.resolve_gene_ids(frame)
+        from .mapping import is_blank
+
+        missing = int(resolved.map(is_blank).sum())
+        if missing == len(frame):
+            raise MappingError(
+                f"Every row is missing an identifier in {mapping.gene_id_column!r}"
+                + (
+                    f" and {mapping.gene_id_fallback_column!r}"
+                    if mapping.gene_id_fallback_column
+                    else ""
+                )
+                + ". Check the column number and that the file has a header row."
+            )
+        return cls(
+            frame=frame,
+            mapping=mapping,
+            name=name,
+            gene_ids_filled=filled,
+            gene_ids_missing=missing,
+        )
+
+    @property
+    def id_warnings(self) -> list:
+        """Human-readable warnings about identifier coverage, empty if clean."""
+        notes = []
+        if self.gene_ids_filled:
+            notes.append(
+                f"{self.gene_ids_filled:,} of {len(self.frame):,} rows took their "
+                f"identifier from the fallback column "
+                f"{self.mapping.gene_id_fallback_column!r} "
+                f"({self.mapping.gene_id_fallback_type}). IPA is told a single "
+                f"gene ID type for the submission -- "
+                f"{self.mapping.gene_id_type!r} -- so those rows are uploaded "
+                "under that declaration and may not map."
+            )
+        if self.gene_ids_missing:
+            notes.append(
+                f"{self.gene_ids_missing:,} of {len(self.frame):,} rows have no "
+                "usable identifier and will almost certainly be dropped by IPA."
+            )
+        return notes
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -120,5 +165,8 @@ class Dataset:
 
     def describe(self) -> str:
         """Summarise the dataset and its mapping in one printable block."""
-        head = f"{self.name or 'dataset'}: {self.n_genes} rows"
-        return head + "\n" + self.mapping.describe()
+        head = f"{self.name or 'dataset'}: {self.n_genes:,} rows"
+        body = head + "\n" + self.mapping.describe()
+        for note in self.id_warnings:
+            body += f"\nWarning: {note}"
+        return body

@@ -30,9 +30,21 @@ from .models import MeasurementType
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
-__all__ = ["Measurement", "Observation", "ColumnMapping"]
+__all__ = ["Measurement", "Observation", "ColumnMapping", "is_blank"]
 
 MeasurementLike = Union[MeasurementType, str]
+
+#: Spellings of "no value" seen in real expression tables.
+_BLANK_TOKENS = {"", "na", "nan", "none", "null", "-", "."}
+
+
+def is_blank(value) -> bool:
+    """Return whether *value* should be treated as a missing identifier."""
+    if value is None:
+        return True
+    if isinstance(value, float) and value != value:  # NaN
+        return True
+    return str(value).strip().lower() in _BLANK_TOKENS
 
 
 def _coerce_type(value: MeasurementLike) -> MeasurementType:
@@ -159,12 +171,32 @@ class ColumnMapping:
     gene_id_type: str
     observations: List[Observation] = field(default_factory=list)
     gene_id_label: Optional[str] = None
+    gene_id_fallback_column: Optional[str] = None
+    gene_id_fallback_type: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not str(self.gene_id_column).strip():
             raise MappingError("gene_id_column must be a non-empty column name.")
         if not str(self.gene_id_type).strip():
             raise MappingError("gene_id_type must be set, e.g. 'ensembl'.")
+        if self.gene_id_fallback_column is not None:
+            if not str(self.gene_id_fallback_column).strip():
+                raise MappingError(
+                    "gene_id_fallback_column must be a non-empty column name, or None."
+                )
+            if self.gene_id_fallback_column == self.gene_id_column:
+                raise MappingError(
+                    "gene_id_fallback_column must differ from gene_id_column."
+                )
+            if not (self.gene_id_fallback_type or "").strip():
+                raise MappingError(
+                    "gene_id_fallback_type must be set when a fallback identifier "
+                    "column is given, e.g. 'genesymbol'."
+                )
+        elif self.gene_id_fallback_type:
+            raise MappingError(
+                "gene_id_fallback_type was set without gene_id_fallback_column."
+            )
         coerced: List[Observation] = []
         for obs in self.observations:
             if isinstance(obs, Observation):
@@ -250,8 +282,47 @@ class ColumnMapping:
 
     @property
     def used_columns(self) -> List[str]:
-        """The identifier column plus every value column."""
-        return [self.gene_id_column] + self.value_columns
+        """The identifier column(s) plus every value column."""
+        columns = [self.gene_id_column]
+        if self.gene_id_fallback_column:
+            columns.append(self.gene_id_fallback_column)
+        return columns + self.value_columns
+
+    # -- identifier resolution ---------------------------------------------
+
+    def resolve_gene_ids(self, frame: "pd.DataFrame") -> Tuple["pd.Series", int]:
+        """Return the identifier column actually uploaded, and how many rows were filled.
+
+        With no fallback configured this is just the primary column. When a
+        fallback is configured, rows whose primary identifier is blank or
+        missing take the fallback column's value instead.
+
+        .. warning::
+           IPA is told a single ``geneidtype`` for the whole submission -- the
+           primary column's type. Rows filled from a fallback column of a
+           *different* type are therefore uploaded under the primary's type
+           declaration, and IPA may fail to map them. The fill count is returned
+           so callers can surface this rather than let it pass unnoticed.
+
+        Returns:
+            ``(series, n_filled)`` where *n_filled* counts rows that took a
+            usable value from the fallback column.
+        """
+        primary = frame[self.gene_id_column]
+        if not self.gene_id_fallback_column:
+            return primary, 0
+
+        fallback = frame[self.gene_id_fallback_column]
+        primary_blank = primary.map(is_blank)
+        fallback_usable = ~fallback.map(is_blank)
+        fill = primary_blank & fallback_usable
+        resolved = primary.where(~fill, fallback)
+        return resolved, int(fill.sum())
+
+    def unresolved_gene_ids(self, frame: "pd.DataFrame") -> int:
+        """Count rows that end up with no usable identifier at all."""
+        resolved, _ = self.resolve_gene_ids(frame)
+        return int(resolved.map(is_blank).sum())
 
     # -- validation against real data --------------------------------------
 
@@ -367,10 +438,13 @@ class ColumnMapping:
 
     def describe(self) -> str:
         """Return a human-readable summary, handy for logging before upload."""
-        lines = [
-            f"gene id: {self.gene_id_column!r} ({self.gene_id_type})",
-            f"observations: {len(self.observations)}",
-        ]
+        lines = [f"gene id: {self.gene_id_column!r} ({self.gene_id_type})"]
+        if self.gene_id_fallback_column:
+            lines.append(
+                f"  fallback: {self.gene_id_fallback_column!r} "
+                f"({self.gene_id_fallback_type}) -- used only where the primary is blank"
+            )
+        lines.append(f"observations: {len(self.observations)}")
         for obs in self.observations:
             lines.append(f"  {obs.name}:")
             for m in self.ordered_measurements(obs):
