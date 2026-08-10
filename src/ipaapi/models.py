@@ -5,7 +5,55 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional, Tuple
 
-__all__ = ["MeasurementType", "AnalysisStatus", "ReferenceSet"]
+__all__ = ["MeasurementType", "AnalysisStatus", "ReferenceSet", "GENE_ID_TYPES"]
+
+#: Every accepted ``geneidtype`` value, from the IPA Integration Module
+#: documentation (April 2026), §3.1. Maps the wire value to the database it
+#: refers to.
+#:
+#: Note that **species is carried by the identifier type**, not by a separate
+#: parameter: ``hugo`` is human, ``mousesymeg`` mouse, ``ratsymeg`` rat. There
+#: is no species argument in the API.
+#:
+#: Several entries are aliases for the same thing (``hugo`` / ``humansymeg`` /
+#: ``humanegsym``). The list is not guessable from the interface -- the desktop
+#: client's label "Gene Symbol - human (HUGO / HGNC, Entrez Gene)" corresponds
+#: to ``hugo``, while ``genesymbol`` and ``hgnc`` are not accepted at all.
+GENE_ID_TYPES = {
+    "affymetrix": "Affymetrix",
+    "affymetrixsnp": "Affymetrix SNP ID",
+    "agilent": "Agilent",
+    "abi": "Life Technologies (Applied Biosystems)",
+    "life": "Life Technologies (Applied Biosystems)",
+    "cas": "CAS Registry",
+    "codelink": "CodeLink",
+    "dbsnp": "dbSNP",
+    "ensembl": "Ensembl",
+    "entrezgene": "Entrez Gene",
+    "locuslink": "Entrez Gene",
+    "genbank": "GenBank",
+    "genpept": "GenPept",
+    "ginumber": "GI Number",
+    "hugo": "Gene symbol -- human (Hugo / HGNC, Entrez Gene)",
+    "humansymeg": "Gene symbol -- human (Hugo / HGNC, Entrez Gene)",
+    "humanegsym": "Gene symbol -- human (Hugo / HGNC, Entrez Gene)",
+    "mousesymeg": "Gene Symbol -- mouse (Entrez Gene)",
+    "mouseegsym": "Gene Symbol -- mouse (Entrez Gene)",
+    "ratsymeg": "Gene Symbol -- rat (Entrez Gene)",
+    "rategsym": "Gene Symbol -- rat (Entrez Gene)",
+    "hmdb": "Human Metabolome Database",
+    "illumina": "Illumina",
+    "ipi": "International Protein Index",
+    "kegg": "KEGG ID",
+    "mirbasemature": "miRBase (mature)",
+    "mirbasestemloop": "miRBase (stemloop)",
+    "pubchem": "PubChem CID",
+    "refseq": "RefSeq",
+    "ucsc_hg18": "UCSC isoform ids (hg18)",
+    "ucsc_hg19": "UCSC isoform ids (hg19)",
+    "swissprot": "UniProt/SwissProt Accession",
+    "unigene": "UniGene",
+}
 
 
 class MeasurementType(str, Enum):
@@ -114,23 +162,31 @@ class AnalysisStatus(str, Enum):
 
 
 class ReferenceSet(str, Enum):
-    """Background gene set an analysis is scored against.
+    """Background set an analysis is scored against.
 
-    Only ``dataset`` is known to be accepted -- it is the sole value QIAGEN's
-    demo code ever sent, and the API's accepted vocabulary is not documented.
-    A previously guessed ``ingenuity`` value was rejected by the server with a
-    generic HTML error page, so it has been removed rather than left to mislead.
+    Values per the IPA Integration Module documentation (April 2026), §4.1.3.
 
-    To score against the Ingenuity Knowledge Base instead, omit the parameter
-    (pass ``reference_set=None``) so IPA applies whatever default it considers
-    correct.
+    .. important::
+       **Omitting the parameter does not mean "use the Knowledge Base".** When
+       neither ``referenceset`` nor ``referencesettype`` is given, IPA chooses
+       by dataset size:
 
-    .. note::
-       ``dataset`` uses the uploaded genes as background, which is right for a
-       complete measured transcriptome. For a **pre-filtered** hit list the
-       background and the analysis-ready set are the same, which degenerates
-       the enrichment statistics: z-scores are still produced, but overlap
-       p-values are not meaningful.
+       - fewer than 2000 identifiers -> :attr:`IPKB`
+       - 2000 or more identifiers    -> :attr:`DATASET`
+
+       So a large pre-filtered hit list silently gets its own genes as the
+       background. Pass :attr:`IPKB` explicitly if that is not what you want.
+
+    Attributes:
+        DATASET: The uploaded dataset is the background. Appropriate when the
+            upload is a complete measured transcriptome.
+        IPKB: The Ingenuity Knowledge Base -- "Genes Only" if the upload holds
+            only genes, "Genes + Endogenous Chemicals" if chemicals are present.
+
+    Array platforms (Affymetrix, Illumina and so on) may also be named, paired
+    with a ``referencesettype``; those are not modelled here. See §4.1.3 of the
+    documentation and the platform list it links to.
     """
 
     DATASET = "dataset"
+    IPKB = "ipkb"

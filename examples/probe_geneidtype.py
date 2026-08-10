@@ -1,5 +1,12 @@
 """Discover which gene ID type strings IPA accepts.
 
+.. note::
+   **Superseded.** The accepted vocabulary is documented in the IPA
+   Integration Module (April 2026), section 3.1, and is available as
+   ``ipaapi.models.GENE_ID_TYPES`` or ``ipaapi submit --list-id-types``.
+   This script is kept for verifying the list against a live account, or
+   for checking a value the documentation does not cover.
+
 IPA's accepted ``geneidtype`` vocabulary is not documented and is not
 guessable: ``ensembl`` and ``hugo`` work, while ``genesymbol`` and the desktop
 client's own label ``Gene Symbol`` are both rejected. There is no endpoint that

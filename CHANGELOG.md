@@ -6,6 +6,40 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.4.0 — 2026-08-05
+
+Working from QIAGEN's official *IPA Integration Module (APIs)* documentation
+(April 2026) rather than from inference. Several things we had established by
+trial were confirmed; two were wrong.
+
+### Added
+
+- **`GENE_ID_TYPES`** — all 32 documented `geneidtype` values with the database
+  each refers to (§3.1), exposed as `ipaapi submit --list-id-types`. A value
+  outside the list is warned about, with a near-match suggestion, but still
+  sent; IPA remains the authority.
+- **Species is carried by the identifier type**, not a separate parameter:
+  `hugo` human, `mousesymeg` mouse, `ratsymeg` rat. There is no species
+  argument in the API — an open question now closed.
+- **`ReferenceSet.IPKB`** (`ipkb`), the Ingenuity Knowledge Base.
+
+### Changed
+
+- **Corrected: omitting `referenceset` does not mean "use the Knowledge
+  Base".** IPA chooses by dataset size — `ipkb` below 2000 identifiers,
+  `dataset` at 2000 or more (§4.1.3.1). Large pre-filtered hit lists therefore
+  get their own genes as the background even with the parameter omitted. Pass
+  `--reference-set ipkb` explicitly to override.
+
+### Notes
+
+- The measurement types and ranges this package enforces match §3.1 exactly.
+- §3.1 also states that **out-of-range expression values are silently ignored**
+  — "analysis will still proceed without errors or warning diagnostics", with
+  offending entries dropped. That makes the range check load-bearing rather
+  than pedantic: declaring log2 values as `foldchange` would have silently
+  discarded every gene between -1 and 1.
+
 ## 0.3.3 — 2026-08-05
 
 ### Added

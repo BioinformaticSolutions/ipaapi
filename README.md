@@ -231,52 +231,48 @@ selected. Use `--project` to group a batch.
 ### The reference set
 
 The reference set is the background enrichment is scored against — the
-denominator of the Fisher's exact test behind every p-value in a core analysis.
+denominator of the Fisher's exact test behind every p-value.
 
-**By default `ipaapi` does not send the parameter**, so IPA applies its own
-default. This is confirmed to produce real p-values and FDR.
+| Value | Background |
+| --- | --- |
+| `ipkb` | Ingenuity Knowledge Base (Genes Only, or Genes + Endogenous Chemicals if chemicals are present) |
+| `dataset` | the genes you uploaded |
+| `omit` (default) | IPA chooses — **by dataset size** |
 
-QIAGEN's demo code sent `referenceset=dataset`, which makes the background the
-genes you uploaded. That is correct only when the upload is a **complete
-measured transcriptome**. For a **pre-filtered** hit list the background and the
-analysis-ready set are the same genes, the test has nothing to be surprised
-against, and the statistics come back degenerate — z-scores present, p-values
-and FDR missing. If you see exactly that, this is why.
+**The size rule is the part that surprises.** With neither `referenceset` nor
+`referencesettype` given, IPA uses `ipkb` below 2000 identifiers and `dataset`
+at 2000 or more (Integration Module §4.1.3.1). So omitting is *not* the same as
+asking for the Knowledge Base: a large pre-filtered hit list quietly gets its
+own genes as the background.
 
-`--reference-set dataset` restores the demo's behaviour when the upload really
-is a full transcriptome.
+If your files are filtered hit lists of a few thousand genes and you want them
+scored against everything IPA knows, say so explicitly:
 
-> A previously guessed `ingenuity` value was rejected by the server. Do not
-> assume other display labels work either — see the gene ID types below for how
-> unobvious IPA's vocabulary is.
+```bash
+ipaapi submit ~/data --ID 1:hugo --FC 4:logratio --reference-set ipkb --project Study1
+```
+
+Array platforms (Affymetrix, Illumina, …) can also be named as reference sets,
+paired with a `referencesettype`. Those aren't exposed here; see §4.1.3.
 
 ### Gene ID types
 
-IPA's accepted `geneidtype` vocabulary is **not documented publicly** and is not
-guessable from the interface. Values confirmed against the live API:
+`--ID COLUMN:TYPE` takes any value from IPA's documented `geneidtype` list
+(Integration Module §3.1). `ipaapi submit --list-id-types` prints all 32.
 
-| Value | Identifiers |
-| --- | --- |
-| `ensembl` | Ensembl gene IDs (`ENSG...`) |
-| `hugo` | human gene symbols |
+Common ones: `ensembl`, `hugo`, `entrezgene`, `refseq`, `swissprot`,
+`affymetrix`, `illumina`, `agilent`.
 
-The desktop client labels that second one "Gene Symbol - human (HUGO / HGNC /
-Entrez Gene)" — and of those three names only `hugo` is accepted. Both
-`genesymbol` and `Gene Symbol` are rejected, so it is neither the compound word
-nor the client's own display label.
+Two things about it are not guessable:
 
-An unrecognised type fails before anything is uploaded, and IPA names the value
-it rejected, so candidates can be tried cheaply:
+- **Human gene symbols are `hugo`** — not `genesymbol`, not `hgnc`, and not the
+  desktop client's label `Gene Symbol`. All three are rejected.
+- **Species rides on the identifier type.** There is no species parameter:
+  `hugo` is human, `mousesymeg` mouse, `ratsymeg` rat.
 
-```
-REJECTED: IPA does not recognise the gene ID type 'genesymbol'.
-
-NOTHING WAS SUBMITTED.
-```
-
-`examples/probe_geneidtype.py` walks a candidate list against a two-row extract.
-Note that a type IPA *accepts* creates a real analysis and consumes allowance —
-there is no way to validate one without committing to it.
+A type outside the documented list is warned about but still sent, since IPA is
+the authority and the list may age. An unrecognised value fails before anything
+is uploaded, and IPA names the value it rejected.
 
 ### Two identifier columns
 

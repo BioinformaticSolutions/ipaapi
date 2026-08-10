@@ -358,22 +358,18 @@ def test_other_html_errors_keep_the_generic_advice():
         assert "--reference-set and the --ID type are the usual culprits" in str(exc)
 
 
-def test_only_empirically_confirmed_id_types_are_advertised():
-    """Listing guesses as 'common types' sent a user straight into a failure."""
-    from ipaapi.cli import CONFIRMED_ID_TYPES, build_parser
+def test_advertised_id_types_come_from_the_documented_list():
+    """Guesses in this list previously walked a user into a failed submission."""
+    from ipaapi.cli import COMMON_ID_TYPES
+    from ipaapi.models import GENE_ID_TYPES
 
-    # Values observed to be accepted by IPA, and nothing else. Guesses in this
-    # list previously walked a user straight into a failed submission.
-    assert CONFIRMED_ID_TYPES == ("ensembl", "hugo")
-
-    from ipaapi.cli import CANDIDATE_ID_TYPES
-
-    # Anything confirmed or known-rejected must not linger among the guesses.
-    assert not set(CONFIRMED_ID_TYPES) & set(CANDIDATE_ID_TYPES)
-    assert "genesymbol" not in CANDIDATE_ID_TYPES
-
-    help_text = build_parser().format_help()
-    assert "genesymbol" not in help_text.split("confirmed to work")[0]
+    assert set(COMMON_ID_TYPES) <= set(GENE_ID_TYPES)
+    # The values that cost a live submission to discover.
+    assert "hugo" in GENE_ID_TYPES
+    assert "genesymbol" not in GENE_ID_TYPES
+    assert "hgnc" not in GENE_ID_TYPES
+    # Species rides on the identifier type; there is no species parameter.
+    assert GENE_ID_TYPES["mousesymeg"].lower().startswith("gene symbol -- mouse")
 
 
 # -- IPA refusing to run an accepted request -------------------------------

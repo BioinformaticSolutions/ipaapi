@@ -25,7 +25,7 @@ from .errors import (
     QuotaExceededError,
 )
 from .mapping import ColumnMapping, Measurement, Observation
-from .models import MeasurementType, ReferenceSet
+from .models import GENE_ID_TYPES, MeasurementType, ReferenceSet
 from .triage import TRIAGE_DIRNAMES, Triage
 
 __all__ = ["main"]
@@ -35,41 +35,14 @@ TABLE_PATTERNS = ("*.txt", "*.tsv", "*.csv")
 
 _GLOB_CHARS = set("*?[")
 
-#: Gene identifier types confirmed to be accepted by IPA.
-#:
-#: Only values actually observed to work belong here. IPA's accepted vocabulary
-#: is not documented publicly and is narrower than the obvious names suggest:
-#: both 'genesymbol' and 'Gene Symbol' are rejected with "Unknown GeneId Type",
-#: so it is neither the obvious compound word nor the desktop client's display
-#: label. Listing plausible-looking guesses here previously sent users straight
-#: into a failed submission, so the list stays strictly empirical.
-#:
-#: - ``ensembl`` -- Ensembl gene IDs (ENSG...), from QIAGEN's demo code.
-#: - ``hugo``    -- human gene symbols. The desktop client calls this column
-#:   type "Gene Symbol - human (HUGO / HGNC / Entrez Gene)"; of those three
-#:   names the API takes the first.
-CONFIRMED_ID_TYPES = ("ensembl", "hugo")
+# The accepted gene ID vocabulary is documented (IPA Integration Module, April
+# 2026, section 3.1) and lives in models.GENE_ID_TYPES. Nothing is guessed here
+# any more: an earlier hand-made list of "common" types walked users straight
+# into failed submissions, because plausible names like 'genesymbol' and 'hgnc'
+# are not accepted while 'hugo' is.
 
-#: Names worth trying, unverified. IPA validates server-side and names the value
-#: it rejected, so an unknown type fails fast and informatively.
-#:
-#: The gene-symbol candidates are ordered by the IPA desktop client's own label
-#: for that column -- "Gene Symbol - human (HUGO / HGNC / Entrez Gene)" -- which
-#: names the three identifier systems it covers. The client and the REST API do
-#: not necessarily share vocabulary, so these remain guesses, but they are
-#: guesses drawn from IPA's own wording rather than from convention.
-CANDIDATE_ID_TYPES = (
-    "hgnc",
-    "entrezgene",
-    "refseq",
-    "uniprot",
-    "genbank",
-    "affymetrix",
-    "illumina",
-    "agilent",
-    "unigene",
-    "mirbase",
-)
+#: A short list for help text; the full mapping is in GENE_ID_TYPES.
+COMMON_ID_TYPES = ("ensembl", "hugo", "entrezgene", "refseq", "swissprot")
 
 _EPILOG = f"""\
 column positions are 0-based: --ID 0 is the first column in the file
@@ -80,12 +53,11 @@ where the primary is blank. Because IPA accepts one gene ID type per submission,
 rows filled from a second identifier of a different type are uploaded under the
 primary's type and may not map; the fill count is always reported.
 
-gene ID types confirmed to work:
-  ensembl   Ensembl gene IDs (ENSG...)
-  hugo      human gene symbols -- the client calls this
-            "Gene Symbol - human (HUGO / HGNC / Entrez Gene)"
-IPA's vocabulary is undocumented and unobvious: 'genesymbol' and 'Gene Symbol'
-are both rejected. An unknown type fails fast and IPA names the value.
+common gene ID types: {', '.join(COMMON_ID_TYPES)}
+Species is carried by the ID type, not a separate parameter: hugo is human,
+mousesymeg mouse, ratsymeg rat. Note 'genesymbol' and 'hgnc' are NOT accepted
+for gene symbols -- the value is 'hugo'. Run with --list-id-types for all of
+them.
 measurement types for --FC: ratio, foldchange, logratio
 
 PATH may be a single file or a directory. Given a directory, --pattern selects
@@ -163,7 +135,17 @@ def parse_id_spec(text: str) -> Tuple[int, str]:
     if not id_type:
         raise argparse.ArgumentTypeError(
             f"--ID {text!r} is missing the identifier type, e.g. "
-            f"{text.rstrip(':')}:{CONFIRMED_ID_TYPES[0]}."
+            f"{text.rstrip(':')}:{COMMON_ID_TYPES[0]}."
+        )
+    if id_type.lower() not in GENE_ID_TYPES:
+        close = [t for t in GENE_ID_TYPES if id_type.lower() in t or t in id_type.lower()]
+        hint = f" Did you mean: {', '.join(sorted(close))}?" if close else ""
+        print(
+            f"Warning: {id_type!r} is not in IPA's documented gene ID type list."
+            + hint
+            + " Sending it anyway; run 'ipaapi submit --list-id-types' for the"
+            " full list.",
+            file=sys.stderr,
         )
     return _parse_index(column, "--ID"), id_type
 
@@ -799,6 +781,25 @@ def cmd_history(args) -> int:
 # -- parser ----------------------------------------------------------------
 
 
+class _ListIdTypes(argparse.Action):
+    """Print every documented gene ID type and exit."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        width = max(len(t) for t in GENE_ID_TYPES)
+        print("gene ID types accepted by IPA (Integration Module, April 2026 s3.1):\n")
+        for value, database in GENE_ID_TYPES.items():
+            print(f"  {value.ljust(width)}  {database}")
+        print(
+            "\nSpecies is carried by the identifier type -- there is no species "
+            "parameter.\nSeveral values are aliases: hugo / humansymeg / humanegsym "
+            "are the same thing."
+        )
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ipaapi",
@@ -823,6 +824,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_mapping_arguments(validate)
     validate.set_defaults(func=cmd_validate)
+    validate.add_argument(
+        "--list-id-types", action=_ListIdTypes, help="list every gene ID type and exit"
+    )
 
     submit = subparsers.add_parser(
         "submit",
@@ -833,6 +837,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_mapping_arguments(submit)
     _add_auth_arguments(submit)
+    submit.add_argument(
+        "--list-id-types", action=_ListIdTypes, help="list every gene ID type and exit"
+    )
     submit.add_argument("--project", required=True, help="destination IPA project")
     submit.add_argument("--analysis-name", default=None, help="override analysis name")
     submit.add_argument("--dataset-name", default=None, help="override dataset name")
@@ -840,10 +847,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-set",
         default="omit",
         choices=[r.value for r in ReferenceSet] + ["omit"],
-        help="background the analysis is scored against. 'omit' (default) leaves "
-        "the parameter out so IPA applies its own default, which is what produces "
-        "real p-values and FDR; 'dataset' uses the uploaded genes as the "
-        "background, appropriate only for a complete measured transcriptome",
+        help="background the analysis is scored against. 'ipkb' is the Ingenuity "
+        "Knowledge Base; 'dataset' is the genes you uploaded. 'omit' (default) "
+        "lets IPA choose, which it does BY SIZE: under 2000 identifiers it uses "
+        "ipkb, at 2000 or more it uses dataset. Set this explicitly if that "
+        "size rule is not what you want",
     )
     submit.add_argument(
         "--log-file",

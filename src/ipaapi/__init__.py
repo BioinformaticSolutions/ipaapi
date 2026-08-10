@@ -52,11 +52,11 @@ from .errors import (
     SubmissionError,
 )
 from .mapping import ColumnMapping, Measurement, Observation
-from .models import AnalysisStatus, MeasurementType, ReferenceSet
+from .models import GENE_ID_TYPES, AnalysisStatus, MeasurementType, ReferenceSet
 
 #: Single source of truth for the package version; pyproject.toml reads it from
 #: here at build time. Bump it in this file and nowhere else.
-__version__ = "0.3.3"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",
@@ -70,6 +70,7 @@ __all__ = [
     "MeasurementType",
     "AnalysisStatus",
     "ReferenceSet",
+    "GENE_ID_TYPES",
     # auth
     "login",
     "Credentials",

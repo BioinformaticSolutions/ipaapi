@@ -153,3 +153,23 @@ def test_reference_set_is_omitted_by_default(frame, two_obs_mapping):
 def test_reference_set_is_sent_when_given(frame, two_obs_mapping):
     pairs = build(frame, two_obs_mapping, reference_set="dataset")
     assert keys_named(pairs, "referenceset") == ["dataset"]
+
+
+def test_ipkb_is_a_valid_reference_set(frame, two_obs_mapping):
+    """Documented in section 4.1.3: the Ingenuity Knowledge Base."""
+    from ipaapi.models import ReferenceSet
+
+    pairs = build(frame, two_obs_mapping, reference_set=ReferenceSet.IPKB.value)
+    assert keys_named(pairs, "referenceset") == ["ipkb"]
+
+
+def test_the_size_rule_that_makes_omitting_ambiguous():
+    """Omitting does not mean "Knowledge Base" -- IPA picks by dataset size.
+
+    Under 2000 identifiers it uses ipkb; at 2000 or more it uses the dataset.
+    This is documented behaviour, recorded here so the reasoning is not lost.
+    """
+    from ipaapi.models import ReferenceSet
+
+    assert ReferenceSet.IPKB.value == "ipkb"
+    assert ReferenceSet.DATASET.value == "dataset"
