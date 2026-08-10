@@ -6,6 +6,20 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.3.3 — 2026-08-05
+
+### Added
+
+- **`examples/probe_geneidtype.py` can now enumerate the accepted gene ID
+  vocabulary for free.** IPA has no endpoint that lists it, but the failure
+  modes are distinguishable: an unknown type is rejected before any analysis is
+  created, while a *valid* type gets as far as creating one and only then hits
+  the allowance. So when the account is quota-blocked, every accepted type
+  reports itself at no cost. The script detects this automatically — it
+  continues past acceptances that were blocked by the allowance, and stops
+  immediately if a candidate genuinely creates an analysis, so an account with
+  allowance remaining is never drained.
+
 ## 0.3.2 — 2026-08-05
 
 ### Changed
