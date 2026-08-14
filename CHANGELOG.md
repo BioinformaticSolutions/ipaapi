@@ -1,10 +1,31 @@
 # Changelog
 
-Versions follow [semantic versioning](https://semver.org). While the package is
-pre-1.0, the minor number is bumped for behaviour changes as well as features.
+Versions follow [semantic versioning](https://semver.org): breaking changes to
+the command line or the Python API bump the major number, additions bump the
+minor, fixes bump the patch.
 
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
+
+## 1.0.0 — 2026-08-05
+
+First stable release. No code changes from 0.5.0 — the version marks that the
+interface is settled and the package has been used in earnest.
+
+Established in production: 37 analyses submitted against live IPA across 5
+donors and 9 cell types, with batch submission, quota-aware resume and the
+identifier/measurement vocabulary all exercised.
+
+From here, breaking changes to the CLI or the Python API require a major
+version bump.
+
+### Interface considered stable
+
+- `ipaapi validate | submit | status | report | history` and their flags.
+- `ColumnMapping`, `Observation`, `Measurement`, `Dataset`, `IPAClient`.
+- `MeasurementType`, `AnalysisStatus`, `ReferenceSet`, `GENE_ID_TYPES`.
+- The exception hierarchy under `IPAError`.
+- The submission log format (tab-separated, header row, append-only).
 
 ## 0.5.0 — 2026-08-05
 

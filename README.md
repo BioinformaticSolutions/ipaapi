@@ -71,7 +71,7 @@ and whether it's an editable checkout rather than a built wheel:
 
 ```bash
 $ ipaapi --version
-ipaapi 0.4.0
+ipaapi 1.0.0
 installed at /usr/lib/python3.11/site-packages/ipaapi
 python 3.11.5 (/usr/bin/python3)
 ```
@@ -758,10 +758,11 @@ Tests are fully offline; none of them contact IPA.
 
 ## Status
 
-Pre-1.0 and used in production against live IPA, but the API surface may still
-change — see `CHANGELOG.md`.
+**1.0** — stable and in production use against live IPA. The command line and
+the Python API are settled; breaking changes from here mean a major version
+bump. See `CHANGELOG.md`.
 
-Known open questions:
+Known open questions, none of which affect submission:
 
 - Interpret links (`ipaapi report`) have returned HTTP 500 for analyses that
   succeeded. Cause unconfirmed; possibly the commercial add-on licence.

@@ -15,7 +15,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Ken Jones", email = "Ken.Jones@bioinformaticsolutions.com" }]
 keywords = ["ipa", "ingenuity", "pathway", "bioinformatics", "qiagen"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
