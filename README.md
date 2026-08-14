@@ -4,8 +4,8 @@ A Python package and command-line tool for QIAGEN Ingenuity Pathway Analysis
 (IPA). Upload datasets into an IPA project using an explicit column mapping,
 submit them for analysis, and track the results — one file or several hundred.
 
-Built on QIAGEN's `python-api-demo` example code. **Not an official QIAGEN
-product**, and not endorsed by QIAGEN.
+Free software (MIT). Built on QIAGEN's `python-api-demo` example code — **not
+an official QIAGEN product**, and not endorsed by QIAGEN.
 
 ```bash
 ipaapi submit ~/data --ID 1:hugo --FC 4:logratio --skip-rows 1 \
@@ -28,6 +28,8 @@ ipaapi submit ~/data --ID 1:hugo --FC 4:logratio --skip-rows 1 \
 - [Troubleshooting](#troubleshooting)
 - [How a submission is encoded](#how-a-submission-is-encoded)
 - [Development](#development)
+- [Contributing](#contributing)
+- [Licence](#licence)
 
 ---
 
@@ -737,15 +739,45 @@ is what actually answers "am I running the wheel I think I am".
 
 ---
 
-## Status and licence
+## Contributing
 
-Pre-1.0. Used in production against live IPA, but the API surface may still
-change; see `CHANGELOG.md`.
+Issues and pull requests are welcome. The most useful contributions are
+**corrections to the [Working with IPA](#working-with-ipa) section** — much of
+it was established by trial against a live account, and a few points have
+already had to be corrected more than once. If IPA behaves differently for you,
+that is worth reporting even without a code change.
 
-`pyproject.toml` currently declares the licence as **Proprietary** and no
-`LICENSE` file is present — worth settling before this repo goes anywhere
-public.
+```bash
+pip install -e ".[dev]"
+pytest
+```
 
-Not affiliated with or endorsed by QIAGEN. IPA is QIAGEN's product; this is an
-independent client for its public API. For API questions QIAGEN's contact is
-`AdvancedGenomicsSupport@qiagen.com`.
+Tests are fully offline; none of them contact IPA.
+
+---
+
+## Status
+
+Pre-1.0 and used in production against live IPA, but the API surface may still
+change — see `CHANGELOG.md`.
+
+Known open questions:
+
+- Interpret links (`ipaapi report`) have returned HTTP 500 for analyses that
+  succeeded. Cause unconfirmed; possibly the commercial add-on licence.
+- Programmatic result retrieval (`client.results()`) requires that same add-on
+  and is largely untested here.
+- The documented reference-set size rule does not match observed behaviour;
+  set `--reference-set` explicitly.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Free to use, modify and redistribute.
+
+Not affiliated with, endorsed by, or supported by QIAGEN. IPA is QIAGEN's
+product; this is an independent client for its public API, built on the
+`python-api-demo` example code QIAGEN publishes. For questions about the API
+itself, QIAGEN's contact is `AdvancedGenomicsSupport@qiagen.com` — please don't
+send them bug reports about this package.

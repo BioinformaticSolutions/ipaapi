@@ -8,15 +8,23 @@ name = "ipaapi"
 # places guarantees they drift, and a wheel whose version lies is worse than
 # no version at all.
 dynamic = ["version"]
-description = "Python client for QIAGEN Ingenuity Pathway Analysis (IPA): dataset upload with custom column mapping, analysis submission, and result retrieval."
+description = "Command-line client for QIAGEN Ingenuity Pathway Analysis: map arbitrary column layouts, submit datasets in bulk, and resume cleanly when the analysis allowance runs out."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Proprietary" }
+license = { file = "LICENSE" }
 authors = [{ name = "Ken Jones", email = "Ken.Jones@bioinformaticsolutions.com" }]
 keywords = ["ipa", "ingenuity", "pathway", "bioinformatics", "qiagen"]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [

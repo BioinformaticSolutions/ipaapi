@@ -6,6 +6,19 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.5.0 — 2026-08-05
+
+### Changed
+
+- **Released under the MIT licence.** `pyproject.toml` previously declared
+  `Proprietary` with no `LICENSE` file present — a combination that, on a public
+  repository, legally means nobody may use it. Adds `LICENSE`, the OSI
+  classifier, and supported-Python classifiers.
+- Package description rewritten to say what the tool does and what distinguishes
+  it, and to stop advertising result retrieval, which needs a commercial add-on.
+- README gains Contributing and Licence sections, and a Status section listing
+  the known open questions rather than leaving them implicit.
+
 ## 0.4.1 — 2026-08-05
 
 ### Documentation
