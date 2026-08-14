@@ -1,368 +1,151 @@
 # ipaapi
 
-A Python package for QIAGEN Ingenuity Pathway Analysis (IPA): upload a dataset
-into an IPA project using an **explicit column mapping**, submit it for
-analysis, and track or retrieve the results.
+A Python package and command-line tool for QIAGEN Ingenuity Pathway Analysis
+(IPA). Upload datasets into an IPA project using an explicit column mapping,
+submit them for analysis, and track the results — one file or several hundred.
 
-Built on QIAGEN's `python-api-demo` example code. Not an official QIAGEN product.
+Built on QIAGEN's `python-api-demo` example code. **Not an official QIAGEN
+product**, and not endorsed by QIAGEN.
+
+```bash
+ipaapi submit ~/data --ID 1:hugo --FC 4:logratio --skip-rows 1 \
+    --reference-set ipkb --project MyStudy --pattern _DEG
+```
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [How the mapping works](#how-the-mapping-works)
+- [Command-line reference](#command-line-reference)
+- [Recipes](#recipes)
+- [Working with IPA](#working-with-ipa) — the undocumented parts
+- [Authentication](#authentication)
+- [Python API](#python-api)
+- [Troubleshooting](#troubleshooting)
+- [How a submission is encoded](#how-a-submission-is-encoded)
+- [Development](#development)
+
+---
 
 ## Why this exists
 
-The demo code works, but assumes a rigid file layout: gene ID in column 0, then
-`n_observations x n_measurements` value columns in strict repeating order, every
-observation carrying the same measurement types in the same positions. Real
-files rarely look like that.
+QIAGEN's demo script works, but assumes a rigid file layout: the gene ID in
+column 0, then `n_observations × n_measurements` value columns in strict
+repeating order, every observation carrying the same measurement types in the
+same positions. Real analysis output rarely looks like that.
 
-This package replaces that assumption with a declaration. You name the gene ID
-column and describe each observation as a set of `(column, measurement type)`
-pairs. Columns may be in any order, named anything, and interleaved with columns
-the analysis should ignore.
+This package replaces that assumption with a declaration. You name the
+identifier column and describe each observation as a set of
+`(column, measurement type)` pairs. Columns may be in any order, named
+anything, and interleaved with columns the analysis should ignore.
 
-## Install
+It also fixes a number of things the demo got wrong or left out — see
+[Differences from the demo](#differences-from-the-demo).
+
+---
+
+## Installation
 
 ```bash
+git clone <this-repo> ipaapi && cd ipaapi
 pip install -e .
+```
+
+Or build and install a wheel:
+
+```bash
+python3 -m pip wheel . --no-deps -w dist
+python3 -m pip install dist/ipaapi-*.whl
 ```
 
 Requires Python 3.9+, `requests`, `requests-oauthlib`, `pandas`.
 
-## Command line
-
-Installing puts `ipaapi` on your PATH:
-
-```bash
-ipaapi --help
-ipaapi submit --help
-```
-
-Column positions are **0-based** — `--ID 0` is the first column in the file.
+Confirm what you're running — this reports the version, the install location,
+and whether it's an editable checkout rather than a built wheel:
 
 ```bash
-# check a mapping without contacting IPA
-ipaapi validate rnaseq.txt --ID 0:ensembl --FC 1:foldchange
-
-# upload into a project and start the analysis
-ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1
-
-# ... and block until it finishes, printing the report link
-ipaapi submit rnaseq.txt --ID 0:ensembl --FC 1:foldchange:1.5 --project Study1 --wait
-
-# check on / fetch links for existing analyses
-ipaapi status abc-123 abc-124
-ipaapi report abc-123 --open
+$ ipaapi --version
+ipaapi 0.4.0
+installed at /usr/lib/python3.11/site-packages/ipaapi
+python 3.11.5 (/usr/bin/python3)
 ```
 
-`--ID` and `--FC` are required.
-
-| Flag | Form | Meaning |
-| --- | --- | --- |
-| `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type (`ensembl`, `hugo`) |
-| `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based fold-change column, measurement type, optional cutoff |
-| `--pattern` | `TEXT` | when PATH is a directory, which files to use (substring or glob) |
-| `--recursive` | flag | search subdirectories too |
-| `--skip-rows` | `N` | discard N lines above the header row |
-| `--sep` | `CHAR` | field delimiter (sniffed from the header line by default) |
-
-### Waiting, or not
-
-`submit` returns as soon as the analyses are queued and tells you how to check
-on them:
-
-```
-submitted SampleA_DEG: abc-123
-
-Submitted 1 analysis.
-Analyses are running in IPA. Check on them with:
-  ipaapi status abc-123
-  ipaapi report abc-123
-Or re-run with --wait to block until they finish.
-```
-
-Add `--wait` to poll instead, printing each analysis's Interpret link as it
-completes. `--interval` and `--timeout` tune the polling (default: every 30s,
-give up after an hour); they only apply with `--wait`.
-
-Analyses run on QIAGEN's servers, so nothing is lost by not waiting — and
-interrupting a `--wait` run with Ctrl-C doesn't cancel anything either.
-
-### Files are filed as they are processed
-
-When `PATH` is a directory, each file is moved as its outcome becomes known:
-
-| Outcome | Where the file goes |
-| --- | --- |
-| IPA accepted it | `submitted/` — done, never resubmitted |
-| The file is the problem | `failed/`, with a `.error.txt` note beside it |
-| Allowance exhausted | left in place for the next run |
-
-```
-failed validation SampleBAD_DEG.txt: --FC refers to column 1, but the file has only 1 column(s)
-submitted SampleA_DEG: 43595001
-submitted SampleB_DEG: 43595002
-
-Allowance exhausted while submitting SampleC_DEG:
-IPA said: 'Monthly analysis quota exceeded'
-
-2 file(s) moved to submitted/
-1 file(s) moved to failed/
-2 file(s) left in place for the next run
-Re-run the same command once the allowance resets; the files left in place are
-exactly the ones still to do.
-```
-
-So the source directory shrinks to exactly the work outstanding, and re-running
-the identical command picks up where it stopped. `submitted/` and `failed/` are
-excluded from discovery, so a second run can't re-ingest its own output. The
-folders are created only when something needs filing, and `--dry-run` reports
-the moves without making them.
-
-Single-file submits are never moved — filing only applies to a directory.
-
-> **The allowance rejection**, confirmed from a live run, reads:
->
-> ```
-> Unable to run analysis: Analysis limit exceeded
-> ```
->
-> It arrives as an HTML page rather than a plain-text error, and is matched
-> against `ipaapi.client.QUOTA_PATTERNS` along with other plausible phrasings
-> and HTTP 429. Matching is deliberately broad: a false positive only leaves a
-> file for the next run, whereas a false negative would file a retryable
-> submission under `failed/`. The raw response is always printed, so a
-> misclassification stays visible.
-
-### Finding analysis IDs later
-
-IPA's API cannot list the analyses on an account — every endpoint needs an ID
-you already hold. So the package keeps its own log: every submitted analysis
-appends a timestamped row to `~/.local/state/ipaapi/submissions.tsv`.
-
-```bash
-ipaapi history
-ipaapi history --project singlet_RNA_P05
-ipaapi history --since 2026-08-01 --limit 20
-ipaapi history --status              # look up each analysis's current state
-```
-
-```
-2026-08-05T08:35:53-06:00  43595039  singlet_RNA_P05  SampleA_DEG
-2026-08-05T08:35:53-06:00  43595041  singlet_RNA_P05  SampleB_DEG
-...
-7 submission(s). Report links: ipaapi report 43595039 43595041 ...
-```
-
-It's a plain TSV — grep it, open it in Excel, whatever. `--log-file` points at a
-different one. The log covers submissions made through this tool only; analyses
-submitted from the IPA client won't appear.
-
-### Comment lines above the header
-
-Files often carry a provenance or title line before the real header:
-
-```
-# RNAseq DE results, pipeline v3, run 2026-08-05
-EnsemblID	log2FC	pval
-ENSG001	2.4	0.01
-```
-
-`--skip-rows N` discards those lines:
-
-```bash
-ipaapi validate SampleA_DEG.txt --skip-rows 1 --ID 0:ensembl --FC 1:logratio
-```
-
-Column numbers always count from the **header row**, so they don't change when
-you add `--skip-rows` — in the file above `EnsemblID` is column 0 either way.
-
-Skipping also fixes delimiter detection. The delimiter is sniffed from the
-header line, and a comment line is a bad thing to sniff: the one above contains
-commas but no tabs, so without `--skip-rows` the file would be read as CSV and
-collapse into two nonsense columns. Rather than let that through, a header that
-looks like a comment (or a file that parses to a single column) is rejected with
-a message pointing at this flag.
-
-### Many files at once
-
-`PATH` may be a directory instead of a file. `--pattern` picks which files in it
-to use, and each matched file becomes its own dataset and its own analysis,
-named after the file:
-
-```bash
-# every .txt / .tsv / .csv in the folder
-ipaapi submit ~/data --ID 0:ensembl --FC 1:foldchange --project Study1
-
-# only files whose name contains "SampleA"
-ipaapi submit ~/data --pattern SampleA --ID 0:ensembl --FC 1:foldchange --project Study1
-
-# glob syntax, searching subfolders too
-ipaapi submit ~/data --pattern "*_DEG.tsv" --recursive \
-    --ID 0:ensembl --FC 1:foldchange --project GroupB
-```
-
-`--pattern` takes plain search text or a glob. Text with no `*`, `?` or `[`
-matches as a **substring**, so `--pattern SampleA` finds `SampleA_DEG.txt` and
-`SampleA_raw.tsv`. Text containing glob characters is used verbatim. With no
-`--pattern`, the common delimited-text extensions are searched. Hidden files are
-skipped; results are sorted so run order is predictable.
-
-Every matched file must fit the same `--ID`/`--FC` column positions. **All files
-are validated before any is uploaded**, so a bad file at position 7 of 10 fails
-the run without leaving six analyses stranded in your project:
-
-```
-error: 1 of 3 file(s) do not fit the mapping, so nothing was uploaded:
-  - SampleZ_DEG.txt: --FC refers to column 1, but the file has only 1 column(s) ...
-```
-
-Run `validate` first to see exactly what matched:
-
-```bash
-ipaapi validate ~/data --pattern SampleA --ID 0:ensembl --FC 1:foldchange
-```
-
-If a *submission* fails partway through a batch (a network drop, say), the run
-continues with the remaining files and reports which ones failed, rather than
-abandoning the ones already uploaded.
-
-Because names come from filenames in batch mode, `--observation`,
-`--analysis-name` and `--dataset-name` only apply when a single file is
-selected. Use `--project` to group a batch.
-
-### The reference set
-
-The reference set is the background enrichment is scored against — the
-denominator of the Fisher's exact test behind every p-value.
-
-| Value | Background |
-| --- | --- |
-| `ipkb` | Ingenuity Knowledge Base (Genes Only, or Genes + Endogenous Chemicals if chemicals are present) |
-| `dataset` | the genes you uploaded |
-| `omit` (default) | IPA chooses — **by dataset size** |
-
-**The size rule is the part that surprises.** With neither `referenceset` nor
-`referencesettype` given, IPA uses `ipkb` below 2000 identifiers and `dataset`
-at 2000 or more (Integration Module §4.1.3.1). So omitting is *not* the same as
-asking for the Knowledge Base: a large pre-filtered hit list quietly gets its
-own genes as the background.
-
-If your files are filtered hit lists of a few thousand genes and you want them
-scored against everything IPA knows, say so explicitly:
-
-```bash
-ipaapi submit ~/data --ID 1:hugo --FC 4:logratio --reference-set ipkb --project Study1
-```
-
-Array platforms (Affymetrix, Illumina, …) can also be named as reference sets,
-paired with a `referencesettype`. Those aren't exposed here; see §4.1.3.
-
-### Gene ID types
-
-`--ID COLUMN:TYPE` takes any value from IPA's documented `geneidtype` list
-(Integration Module §3.1). `ipaapi submit --list-id-types` prints all 32.
-
-Common ones: `ensembl`, `hugo`, `entrezgene`, `refseq`, `swissprot`,
-`affymetrix`, `illumina`, `agilent`.
-
-Two things about it are not guessable:
-
-- **Human gene symbols are `hugo`** — not `genesymbol`, not `hgnc`, and not the
-  desktop client's label `Gene Symbol`. All three are rejected.
-- **Species rides on the identifier type.** There is no species parameter:
-  `hugo` is human, `mousesymeg` mouse, `ratsymeg` rat.
-
-A type outside the documented list is warned about but still sent, since IPA is
-the authority and the list may age. An unrecognised value fails before anything
-is uploaded, and IPA names the value it rejected.
-
-### Two identifier columns
-
-`--ID` may be given twice. The first is the **primary**; the second is used only
-for rows where the primary is blank:
-
-```bash
-ipaapi submit rnaseq.txt --ID 0:ensembl --ID 4:genesymbol \
-    --FC 1:foldchange --project Study1
-```
-
-> **Read this before relying on it.** IPA accepts a *single* `geneidtype` per
-> submission. Rows filled from a second identifier of a different type are still
-> uploaded under the primary's type declaration, so IPA may fail to map them.
-> The package always reports how many rows were filled:
->
-> ```
-> Warning: 1 of 4 rows took their identifier from the fallback column 'Symbol'
-> (genesymbol). IPA is told a single gene ID type for the submission --
-> 'ensembl' -- so those rows are uploaded under that declaration and may not map.
-> ```
->
-> If that number is large, consider `--ID` with the type that covers most rows,
-> or submit twice, once per identifier type.
-
-Rows where *both* identifiers are blank are reported separately; if every row
-lacks an identifier the run aborts, which usually means the column number is
-wrong or the file has no header row.
-
-Only identifier and fold-change columns are exposed on the command line. For
-p-values, FDR, intensity, or multiple observations, use the Python API below.
+---
 
 ## Quick start
 
-```python
-from ipaapi import (
-    ColumnMapping, Dataset, IPAClient, Measurement, MeasurementType, Observation,
-)
+Say your file looks like this — a comment line, then a header, then data:
 
-mapping = ColumnMapping(
-    gene_id_column="Gene IDs",
-    gene_id_type="ensembl",
-    observations=[
-        Observation("Gemfib vs ctrl", [
-            Measurement("FoldChange", MeasurementType.FOLD_CHANGE, cutoff=1.5),
-            Measurement("PValue", MeasurementType.P_VALUE),
-            Measurement("AdjustedPValue", MeasurementType.FALSE_DISCOVERY, cutoff=0.01),
-            Measurement("Group Max Intensity", MeasurementType.INTENSITY),
-        ]),
-    ],
-)
-
-dataset = Dataset.from_file("Data/Gemfibrozil vs Ctrl RNAseq.txt", mapping)
-print(dataset.describe())        # confirm the mapping before uploading
-
-client = IPAClient.login()       # opens a browser for OAuth
-analysis_ids = client.submit(dataset, project="PythonAPI_Demo")
-statuses = client.wait_for(analysis_ids)
-
-for analysis_id, status in statuses.items():
-    if status.succeeded:
-        print(client.report_url(analysis_id))
+```
+# generated by pipeline v3
+Gene,Common_name,Control_mean,Treatment_mean,Fold_change,P-value,Q-value
+ENSG00000229807,XIST,4.21,2.88,-1.33,0.001,0.02
 ```
 
-## Column mapping
+Column positions are **0-based** and counted from the *header* row:
 
-`ColumnMapping` validates before anything is uploaded, so a mistake costs a
-traceback rather than a failed 3 MB request:
+```
+0 Gene   1 Common_name   2 Control_mean   3 Treatment_mean   4 Fold_change   5 P-value   6 Q-value
+```
 
-- every declared column exists in the file;
-- no column is claimed by two observations;
-- values fall inside the range IPA accepts for their declared measurement type
-  (p-values in `[0,1]`, fold changes outside `(-1,1)`, and so on) — opt out with
-  `check_ranges=False`;
-- the measurement types and cutoffs are consistent across observations.
+Check the mapping without contacting IPA:
 
-That last rule is imposed by the IPA API, not by this package. The wire format
-declares `expvaltype`, `expvaltype2`, ... and `cutoff`, `cutoff2`, ... **once for
-the whole submission**, then supplies per-observation column names against those
-slots. So every observation must contribute exactly one column per measurement
-type, and a given type carries one cutoff throughout. Within those limits, order
-and naming are entirely free — observations declared in different column orders
-are normalised into canonical slot order automatically.
+```bash
+ipaapi validate results.csv --ID 1:hugo --FC 4:logratio --skip-rows 1
+```
 
-### Multiple observations
+```
+results: 2,338 rows
+gene id: 'Common_name' (hugo)
+observations: 1
+  results:
+    'Fold_change' -> Log Ratio
+
+     Common_name  Fold_change
+0           XIST        -1.33
+...
+1 file valid. Nothing was uploaded.
+```
+
+When that looks right, submit:
+
+```bash
+ipaapi submit results.csv --ID 1:hugo --FC 4:logratio --skip-rows 1 \
+    --reference-set ipkb --project MyStudy
+```
+
+```
+submitted results: 43595871
+
+Submitted 1 analysis.
+Analyses are running in IPA. Check on them with:
+  ipaapi status 43595871
+  ipaapi report 43595871
+Recorded in ~/.local/state/ipaapi/submissions.tsv -- see 'ipaapi history'.
+```
+
+---
+
+## How the mapping works
+
+Three ideas, and they mirror how IPA thinks about a dataset.
+
+**Measurement** — one value column: which column, what kind of number it holds,
+and an optional cutoff.
+
+**Observation** — a named sample or contrast, and the measurement columns
+belonging to it. One analysis is created per observation.
+
+**ColumnMapping** — the identifier column, its type, and the observations.
 
 ```python
-mapping = ColumnMapping(
-    gene_id_column="Gene IDs",
-    gene_id_type="ensembl",
+ColumnMapping(
+    gene_id_column="Common_name",
+    gene_id_type="hugo",
     observations=[
         Observation("drug A vs ctrl", [
             Measurement("A_log2fc", MeasurementType.LOG_RATIO),
@@ -377,167 +160,592 @@ mapping = ColumnMapping(
 )
 ```
 
-One analysis is launched per observation; `submit()` returns one ID per
-observation, in mapping order.
+**One constraint is imposed by IPA, not by this package.** The wire format
+declares `expvaltype`, `expvaltype2`, … and `cutoff`, `cutoff2`, … *once for the
+whole submission*, then supplies per-observation column names against those
+slots. So every observation must contribute exactly one column per measurement
+type, and a given type carries one cutoff throughout. Both are checked before
+anything is uploaded, with an error that explains why.
 
-### Migrating from the demo
+Within those limits, order and naming are free — observations declared in
+different column orders are normalised automatically.
 
-`ColumnMapping.from_blocks()` reproduces the old positional behaviour, so an
-existing `ipa_analyze(...)` call can be ported without re-describing the file:
+Everything is validated against the actual data before upload: columns exist,
+none is claimed twice, and values fall in the range IPA expects for their type.
+That last check matters more than it looks — see
+[measurement types](#measurement-types).
 
-```python
-mapping = ColumnMapping.from_blocks(
-    columns=list(frame.columns),
-    gene_id_type="ensembl",
-    observation_names=["Gemfib vs ctrl"],
-    measurement_types=["foldchange", "pvalue", "falsediscovery", "intensity"],
-    cutoffs=[1.5, None, 0.01, None],
-)
+---
+
+## Command-line reference
+
 ```
+ipaapi validate   check a mapping against file(s) without uploading
+ipaapi submit     upload into a project and start analyses
+ipaapi status     check the state of existing analyses
+ipaapi report     print IPA Interpret links
+ipaapi history    list analyses submitted through this tool
+```
+
+### Mapping arguments
+
+Used by `validate` and `submit`.
+
+| Flag | Form | Meaning |
+| --- | --- | --- |
+| `PATH` | positional | a data file, or a directory to search |
+| `--ID` | `COLUMN:TYPE` | 0-based identifier column and its IPA gene ID type. May be given twice — see [two identifier columns](#two-identifier-columns) |
+| `--FC` | `COLUMN:TYPE[:CUTOFF]` | 0-based value column, [measurement type](#measurement-types), optional cutoff |
+| `--skip-rows` | `N` | discard N lines above the header row |
+| `--sep` | `CHAR` | field delimiter (sniffed from the header line by default) |
+| `--pattern` | `TEXT` | when PATH is a directory: substring or glob selecting files |
+| `--recursive` | flag | search subdirectories too |
+| `--observation` | `NAME` | observation name in IPA (default: the filename). Single file only |
+| `--no-range-check` | flag | skip the value-range validation |
+| `--list-id-types` | flag | print all 33 gene ID types and exit |
+
+### `submit`
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--project` | *required* | destination IPA project. **Created if it doesn't exist**, so a typo silently makes a new one |
+| `--reference-set` | `omit` | `ipkb`, `dataset`, or `omit`. See [the reference set](#the-reference-set) |
+| `--wait` | off | poll until analyses finish and print report links |
+| `--interval` / `--timeout` | 30s / 3600s | polling, only with `--wait` |
+| `--dry-run` | off | validate and stop before login |
+| `--analysis-name` / `--dataset-name` | filename | single file only |
+| `--log-file` | `~/.local/state/ipaapi/submissions.tsv` | submission log |
+
+### Authentication arguments
+
+Used by every command that contacts IPA.
+
+| Flag | Meaning |
+| --- | --- |
+| `--no-cache` | ignore any cached token |
+| `--token-file` | token cache path (default `~/.cache/ipaapi/token.json`) |
+| `--application-name` | `applicationname` IPA scopes the session to (default `PythonAPI`) |
+| `--browser` | browser to launch for login, e.g. `firefox` |
+
+### `history`
+
+| Flag | Meaning |
+| --- | --- |
+| `--project` / `--since` / `--limit` | filters |
+| `--status` | look up each analysis's current state (requires login) |
+| `--log-file` | read a different log |
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `IPAAPI_TOKEN_FILE` | token cache location — set this if `$HOME` isn't writable |
+| `IPAAPI_LOG_FILE` | submission log location |
+
+---
+
+## Recipes
+
+### Many files, one analysis each
+
+```bash
+ipaapi submit ~/data --pattern _DEG --ID 1:hugo --FC 4:logratio \
+    --skip-rows 1 --reference-set ipkb --project Study1
+```
+
+`--pattern` takes plain text or a glob. Text with no `*`, `?` or `[` matches as
+a **substring**, so `--pattern SampleA` finds `SampleA_DEG.txt` and
+`SampleA_raw.tsv`. With no `--pattern`, `*.txt`/`*.tsv`/`*.csv` are searched.
+Hidden files are skipped and results sorted, so run order is predictable.
+
+Every matched file must fit the same `--ID`/`--FC` positions.
+
+### Files are filed as they're processed
+
+When `PATH` is a directory, each file moves as its outcome becomes known:
+
+| Outcome | Destination |
+| --- | --- |
+| IPA accepted it | `submitted/` |
+| The file is at fault | `failed/`, with a `.error.txt` note beside it |
+| Allowance exhausted, or IPA declined | left in place for the next run |
+
+```
+submitted SampleA_DEG: 43595001
+submitted SampleB_DEG: 43595002
+
+Allowance exhausted while submitting SampleC_DEG:
+REJECTED: the analysis allowance appears to be exhausted.
+IPA said: 'Unable to run analysis: Analysis limit exceeded'
+
+2 file(s) moved to submitted/
+2 file(s) left in place for the next run
+Re-run the same command later; the files left in place are exactly the ones
+still to do.
+```
+
+The source directory shrinks to exactly the work outstanding, and re-running the
+identical command resumes. `submitted/` and `failed/` are excluded from
+discovery, so a run can't re-ingest its own output.
+
+Nothing is moved when the *command* is at fault — a bad `--ID` type or a mapping
+that fails every file leaves the directory untouched, because that's a mistake
+to fix rather than data to quarantine. Single-file submits are never moved.
+
+### Draining a backlog against a daily allowance
+
+Because a stopped run resumes cleanly, this is safe to leave unattended:
+
+```cron
+0 6 * * * cd ~/data && ipaapi submit ./ --pattern _DEG --ID 1:hugo \
+    --FC 4:logratio --skip-rows 1 --reference-set ipkb --project Study1 \
+    >> ~/ipaapi-cron.log 2>&1
+```
+
+It submits until the allowance runs out, files what succeeded, leaves the rest.
+Check the log after the first few runs — a cron job whose *refresh* token has
+expired fails into that file rather than prompting anyone.
+
+### Finding analysis IDs later
+
+IPA's API cannot list the analyses on an account, so the package keeps its own
+log — every submission appends a timestamped row.
+
+```bash
+ipaapi history
+ipaapi history --project Study1 --since 2026-08-01
+ipaapi history --status
+```
+
+```
+2026-08-05T08:35:53-06:00  43595039  Study1  SampleA_DEG
+2026-08-05T08:35:53-06:00  43595041  Study1  SampleB_DEG
+
+2 submission(s). Report links: ipaapi report 43595039 43595041
+```
+
+Plain TSV — grep it, open it in a spreadsheet. It only covers submissions made
+through this tool; anything submitted from the IPA client won't appear.
+
+### Comment lines above the header
+
+```
+# generated by pipeline v3, 2026-08-05
+EnsemblID	log2FC	pval
+```
+
+`--skip-rows 1` discards the preamble. Column numbers count from the header, so
+they don't change when you add it.
+
+Skipping also fixes delimiter detection: the delimiter is sniffed from the
+header line, and a comment line is a bad thing to sniff — the one above has
+commas but no tabs, so without `--skip-rows` the file would be read as CSV and
+collapse into nonsense. Rather than let that through, a header that looks like a
+comment is rejected with a message pointing at this flag.
+
+### Two identifier columns
+
+`--ID` may be given twice. The first is the primary; the second fills rows where
+the primary is blank (`.`, `NA`, empty, and similar are all treated as missing).
+
+```bash
+ipaapi submit data.csv --ID 0:ensembl --ID 1:hugo --FC 4:logratio --project S1
+```
+
+> **Read this before relying on it.** IPA accepts one `geneidtype` per
+> submission. Rows filled from the second column are still uploaded under the
+> *primary's* type, so they may fail to map. The fill count is always reported:
+>
+> ```
+> Warning: 344 of 2,338 rows took their identifier from the fallback column
+> 'Common_name' (hugo). IPA is told a single gene ID type for the submission --
+> 'ensembl' -- so those rows are uploaded under that declaration and may not map.
+> ```
+>
+> If a large fraction is being filled, using the fallback column as the *only*
+> identifier is usually better than mixing.
+
+---
+
+## Working with IPA
+
+Most of this is either undocumented or documented somewhere hard to find. It's
+recorded here because getting it wrong is expensive — analyses consume a
+metered allowance.
+
+### Gene ID types
+
+`--ID COLUMN:TYPE` takes any value from IPA's `geneidtype` list (Integration
+Module §3.1). `ipaapi submit --list-id-types` prints all 33.
+
+Common ones: `ensembl`, `hugo`, `entrezgene`, `refseq`, `swissprot`,
+`affymetrix`, `illumina`, `agilent`.
+
+Two things are not guessable:
+
+- **Human gene symbols are `hugo`.** Not `genesymbol`, not `hgnc`, and not the
+  desktop client's own label `Gene Symbol` — all three are rejected outright.
+- **Species rides on the identifier type.** There is no species parameter:
+  `hugo` human, `mousesymeg` mouse, `ratsymeg` rat.
+
+A type outside the documented list produces a warning with a near-match
+suggestion but is still sent, since IPA is the authority and the list will age.
+An unrecognised value fails before anything is uploaded, and IPA names it.
+
+### The reference set
+
+The background enrichment is scored against — the denominator of the Fisher's
+exact test behind every p-value.
+
+| Value | Background |
+| --- | --- |
+| `ipkb` | Ingenuity Knowledge Base (Genes Only, or + Endogenous Chemicals if chemicals are present) |
+| `dataset` | the genes you uploaded |
+| `omit` (default) | IPA chooses |
+
+Which to use depends on **what you uploaded**:
+
+- Uploading a **complete measured transcriptome** with a cutoff? `dataset` is
+  the better science — the background is what your assay could actually detect,
+  which controls for detection bias.
+- Uploading a **pre-filtered hit list**? `dataset` makes the background nearly
+  identical to the foreground. Use `ipkb`.
+
+§4.1.3.1 states that with the parameter omitted IPA picks by size — `ipkb` below
+2000 identifiers, `dataset` at 2000 or more. **In practice this has not been
+observed to hold**: files of 1,804–6,245 rows all came back as
+`Ingenuity Knowledge Base (Genes Only)`. Since the behaviour is unpredictable,
+set it explicitly for anything you intend to compare against itself.
+
+Verify after the fact — the setting is recorded in every IPA export:
+
+```bash
+grep -h "^Reference set" *_IPA_output.txt | sort | uniq -c
+```
+
+Array platforms can also be named as reference sets, paired with a
+`referencesettype`. Not exposed here; see §4.1.3.
+
+### Measurement types
+
+| Value | Meaning | Valid range |
+| --- | --- | --- |
+| `ratio` | Ratio | `[0, +∞)` |
+| `foldchange` | Fold Change | `(-∞, -1]` and `[1, +∞)` |
+| `logratio` | Log Ratio | `(-∞, +∞)` |
+| `pvalue` | p-value | `[0, 1]` |
+| `falsediscovery` | FDR / q-value | `[0, 100]` |
+| `intensity` | Intensity | `[0, +∞)` |
+| `other` | Other (normalised around zero) | `(-∞, +∞)` |
+| `gain_loss` | Variant Gain/Loss | `-2, -1, 0, 1, 2` |
+| `classification` | Variant ACMG Classification | `-2, -1, 0, 1, 2` |
+
+> **Out-of-range values are silently discarded by IPA.** §3.1: "analysis will
+> still proceed without errors or warning diagnostics" — offending entries are
+> simply dropped. This is why the range check exists and why it refuses rather
+> than warns. Declaring log2 fold changes as `foldchange`, for instance, would
+> quietly discard every gene between −1 and 1, which in a typical scRNA-seq
+> table is most of them.
+
+The package helps in both directions:
+
+- Values declared `foldchange` that cluster inside (−1, 1) → suggests `logratio`.
+- A column declared `logratio` with *no* values in (−1, 1) → warns that it looks
+  like signed fold change, since a real log ratio is centred on zero.
+
+A column called `Fold_change` may hold either. Check the data, not the name.
+
+### What the API cannot do
+
+- **List your projects.** `--project` creates one if the name doesn't exist, so
+  a typo silently makes a new project rather than erroring.
+- **List your analyses.** Every endpoint needs an ID you already hold — hence
+  the local submission log.
+- **Tell you your remaining allowance.** You discover the limit by hitting it.
+
+### Errors IPA actually returns
+
+IPA answers a rejected submission with an **HTML error page**, not plain text.
+The reason is at the *end*, after support boilerplate. This package strips the
+boilerplate and the page footer, and classifies what's left:
+
+| IPA's message | Class | What the tool does |
+| --- | --- | --- |
+| `Unknown GeneId Type (X)` | `MalformedRequestError` | stops; names the flag; moves nothing |
+| `Unable to run analysis: Analysis limit exceeded` | `QuotaExceededError` | stops; leaves remaining files for the next run |
+| `Unable to run analysis: …` (other) | `AnalysisRefusedError` | as above — reached the analysis logic, so not a parameter fault |
+| anything else | `SubmissionError` | files that one under `failed/` |
+
+Quota matching is deliberately broad (`ipaapi.client.QUOTA_PATTERNS` plus HTTP
+429): a false positive only leaves a file for the next run, while a false
+negative would quarantine a retryable submission. The raw response is always
+printed, so a misclassification is visible.
+
+### Interpret links
+
+`ipaapi report <id>` fetches the IPA Interpret URL for a finished analysis. It
+checks status first, so an unfinished analysis says so rather than surfacing a
+bare HTTP 500.
+
+**These have been observed to return HTTP 500 even for succeeded analyses.**
+The cause is unconfirmed — possibly the commercial add-on licence, possibly a
+stale endpoint path inherited from the demo. `examples/probe_interpret.py`
+prints the raw response for diagnosis. Analyses open fine in IPA itself.
+
+---
 
 ## Authentication
 
-`IPAClient.login()` runs the browser OAuth 2.0 + PKCE flow. The default client
-ID is the public one any IPA user may use; it is not a secret.
+Browser-based OAuth 2.0 with PKCE. Your password never reaches this package.
 
-Changes from the demo's flow:
+1. A short-lived HTTP server binds `127.0.0.1:8000`.
+2. Your browser opens QIAGEN's authorization page; you log in there.
+3. QIAGEN redirects back to `localhost:8000` with a one-time code. The `state`
+   parameter is verified, then the code plus the PKCE verifier is exchanged for
+   a token.
+4. The token is used as `Authorization: Bearer …` and the server shuts down.
 
-- the callback is awaited on an `Event` rather than a spin loop that pegged a CPU core;
-- the OAuth `state` parameter is verified instead of discarded (CSRF);
-- login times out rather than hanging forever;
-- the callback server is always shut down, so a second login in one process works;
-- an `error` redirect raises instead of waiting forever;
-- tokens can be cached to disk, so repeat runs skip the browser:
+Whichever account you log in as owns the datasets and projects.
 
-```python
-from ipaapi import IPAClient, TokenCache
-client = IPAClient.login(cache=TokenCache())
-```
+The client ID is the public one any IPA user may use — it is not a secret.
 
-The redirect URI must match the OAuth client registration — for the default
-public client that is `http://localhost:8000`, so the callback port is 8000.
+### Token caching and refresh
+
+Tokens are cached at `~/.cache/ipaapi/token.json`, owner-only (0600). **Access
+tokens are short-lived**, but a refresh token comes with them and is spent
+automatically: an expired cache is renewed over HTTP with no browser and no
+prompt. A browser login is only needed when the refresh token itself is
+rejected.
+
+Deleting the cache is effectively logging out. `--no-cache` forces a fresh
+login. Be aware the token is plaintext on disk — anyone who can read your home
+directory can use it until it expires.
 
 ### Headless servers
 
-Access tokens from QIAGEN are short-lived, but a **refresh token** comes with
-them, and the package spends it automatically: when the cached token has
-expired, it renews silently over HTTP with no browser and no prompt. A browser
-login is only needed when the refresh token itself is rejected.
-
-That makes the copy-a-token workflow practical on a machine with no browser:
+Because refresh is automatic, a token copied from a machine with a browser keeps
+renewing itself indefinitely:
 
 ```bash
-# on a Mac, once
-ipaapi validate anything.txt --ID 0:ensembl --FC 1:foldchange   # or any submit
+# once, on a machine with a browser
+ipaapi submit ... # or any command that logs in
 
-# copy the cache across
 scp ~/.cache/ipaapi/token.json server:~/.cache/ipaapi/token.json
 ssh server chmod 600 ~/.cache/ipaapi/token.json
 ```
 
-From then on the server renews its own token.
-
-**If your home directory isn't writable** — a shared or exported filesystem, say
-— the cache can't be saved and *every run needs a fresh login*, which is exactly
-the situation you're trying to avoid. Put it somewhere writable:
+**If `$HOME` isn't writable**, the cache can't be saved and every run needs a
+fresh login — crippling on a headless box. Point it somewhere writable:
 
 ```bash
 export IPAAPI_TOKEN_FILE=$HOME/ipaapi-token.json
 export IPAAPI_LOG_FILE=$HOME/ipaapi-submissions.tsv
 ```
 
-Or per command, `--token-file PATH` and `--log-file PATH`. Both failures are
-reported loudly rather than swallowed, since a cache that never writes looks
-identical to a token that expires instantly.
+Both failures are reported loudly rather than swallowed, because a cache that
+never writes looks exactly like a token that expires instantly.
 
-When a login *is* genuinely needed — the refresh token was rejected — the
-cleanest answer is X forwarding:
+When an interactive login is genuinely needed, X forwarding is the cleanest
+route — the server-side browser renders locally *and* `localhost:8000` resolves
+server-side where the callback listens, so no port forwarding is required:
 
 ```bash
 ssh -X you@server        # ssh -Y from macOS, with XQuartz running
 ```
 
-A browser installed on the server then renders on your local display, and the
-redirect to `localhost:8000` resolves on the server where the callback is
-listening — so no port forwarding is needed. `--browser firefox` names a
-specific one if the default pick is wrong.
-
-If there's no browser on that machine, forward the callback port instead and use
-your own:
+Failing that, forward the callback port and use your own browser:
 
 ```bash
 ssh -L 8000:localhost:8000 you@server
 ```
 
-Run `ipaapi` inside that session; it prints the authorization URL, you open it
-in your laptop's browser, and the redirect comes back down the tunnel. When no
-browser can be opened, the error says which of these applies — whether `DISPLAY`
-is unset, or set but with no browser found.
+The error message distinguishes `DISPLAY` unset from no browser found.
 
-Already have a token from elsewhere:
+> The redirect URI is pinned to `http://localhost:8000` by the OAuth client
+> registration, so the port is not configurable in practice.
+
+### Using a token obtained elsewhere
 
 ```python
+import os
 from ipaapi import Credentials, IPAClient
+
 client = IPAClient(Credentials.from_token(os.environ["IPA_TOKEN"]))
 ```
 
-## Results
+---
+
+## Python API
+
+```python
+from ipaapi import (
+    ColumnMapping, Dataset, IPAClient, Measurement, MeasurementType,
+    Observation, ReferenceSet, TokenCache,
+)
+
+mapping = ColumnMapping(
+    gene_id_column="Common_name",
+    gene_id_type="hugo",
+    observations=[
+        Observation("HIV vs NEG", [
+            Measurement("Fold_change", MeasurementType.LOG_RATIO),
+        ]),
+    ],
+)
+
+dataset = Dataset.from_file("results.csv", mapping, skip_rows=1)
+print(dataset.describe())          # confirm before uploading
+
+client = IPAClient.login(cache=TokenCache())
+ids = client.submit(dataset, project="MyStudy", reference_set=ReferenceSet.IPKB)
+
+for analysis_id, status in client.wait_for(ids).items():
+    if status.succeeded:
+        print(client.report_url(analysis_id))
+```
+
+Key objects:
+
+| Object | Purpose |
+| --- | --- |
+| `ColumnMapping`, `Observation`, `Measurement` | describe the file |
+| `Dataset.from_file` / `.from_frame` | load and validate |
+| `IPAClient.login()` | OAuth, with caching and refresh |
+| `.submit()` `.status()` `.wait_for()` `.results()` `.report_url()` | the API |
+| `GENE_ID_TYPES` | all 33 identifier types and what they mean |
+| `ipaapi.history` | the submission log |
+| `ipaapi.errors` | everything derives from `IPAError` |
+
+### Results
 
 ```python
 results = client.results(analysis_id)
 print(results.canonical_pathways.head())
-print(results.upstream_regulators.head())
-print(results.bio_functions.head())
-
-cp, ur, df = results          # unpacks like the demo's ipa_results()
+cp, ur, df = results                  # unpacks like the demo's ipa_results()
 ```
 
-> Programmatic result retrieval is a **commercial IPA add-on**. Without that
-> licence these calls raise `ResultsUnavailableError`. Submission, status
-> polling and report URLs are unaffected — the finished analysis can always be
-> opened in IPA itself.
+> Programmatic result retrieval is a **commercial IPA add-on**. Without it these
+> calls raise `ResultsUnavailableError`. Submission, status polling and report
+> links are unaffected.
 
-## Other differences from the demo
+---
 
-- **Request bodies are percent-encoded.** The demo built the body by string
-  concatenation, so any gene ID, column header or observation name containing a
-  space, `&`, `=`, `+` or `%` silently corrupted the request. The sample dataset
-  shipped with the demo contains a column called `Group Max Intensity`.
-- **Submissions are never retried automatically.** GETs retry with backoff on
-  429/5xx; a retried POST could create duplicate analyses.
-- **Errors are typed.** Everything derives from `IPAError`; see `ipaapi.errors`.
-- **Tokens never appear in `repr()`.**
-- **No `install_dependencies()` shelling out to `pip3`.** Dependencies are
-  declared in `pyproject.toml`.
+## Troubleshooting
 
-## Layout
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `REJECTED: IPA does not recognise the gene ID type 'X'` | not in IPA's vocabulary | `--list-id-types`; human symbols are `hugo` |
+| `declared 'foldchange' but holds N out-of-range value(s)` | log2 values declared as linear fold change | `--FC N:logratio` |
+| `Could not find a header row … looks like a comment` | preamble above the header | `--skip-rows N` |
+| `--FC refers to column N, but the file has only M column(s)` | 1-based counting, or wrong `--skip-rows` | positions are 0-based, from the header |
+| `Every row is missing an identifier` | wrong column, or no header | check with `head -1 file \| tr '\t' '\n' \| nl -v0` |
+| `the analysis allowance appears to be exhausted` | daily/period limit | re-run later; files left in place resume |
+| Login prompt on every run | token cache not writable | `export IPAAPI_TOKEN_FILE=...`; check for a root-owned cache |
+| `Could not open a browser automatically` | headless | `ssh -X`, or copy a token across |
+| `report` returns HTTP 500 on a succeeded analysis | unconfirmed; possibly add-on licence | open the analysis in IPA; see `examples/probe_interpret.py` |
+| Analyses have z-scores but no p-values | reference set equals the gene list | `--reference-set ipkb` |
+| Half of all pathways significant | list too large for the background | apply a cutoff, or upload unfiltered data with a cutoff |
+
+Useful first move for any column problem:
+
+```bash
+head -1 yourfile.csv | tr ',\t' '\n' | nl -v0
+```
+
+---
+
+## How a submission is encoded
+
+Worth knowing when debugging. `--ID 1:hugo` becomes three separate things:
+
+| From `--ID` | Wire parameter | Sent |
+| --- | --- | --- |
+| the type | `geneidtype=hugo` | once |
+| the column, resolved from position to header name | `genecolname=Common_name` | once |
+| that column's values | `geneid=XIST`, `geneid=UTY`, … | once per row |
+
+The column *number* never leaves your machine.
+
+The whole dataset travels in one `application/x-www-form-urlencoded` POST to
+`/pa/api/v2/multiobsanalysis`, which both creates the dataset in the project and
+starts one analysis per observation. Parameter naming is positional and
+irregular — for measurement slot *k* and observation *i*, both zero-based:
+
+| Parameter | Meaning |
+| --- | --- |
+| `expvaltype`, `expvaltypeK+1` | measurement type for slot *k* (global) |
+| `cutoff`, `cutoffK+1` | cutoff for slot *k* (global, optional) |
+| `obsI+1name` | observation name |
+| `expvalname`, `expvalK+1name` | column label, first observation |
+| `obsI+1expvalname`, `obsI+1expvalK+1name` | column label, later observations |
+| `geneid` | one per data row |
+| `expvalue`, `expvalK+1` | one per slot per observation, per row |
+
+Per-row value parameters carry no observation prefix — they cycle through the
+slots of observation 1, then observation 2, and so on. Order is load-bearing.
+
+The body is properly percent-encoded. The demo concatenated it by hand, so any
+value containing a space, `&`, `=`, `+` or `%` corrupted the request — including
+the `Group Max Intensity` column in the demo's own sample dataset.
+
+---
+
+## Development
 
 ```
 src/ipaapi/
-  __init__.py    public API
-  models.py      MeasurementType, AnalysisStatus, ReferenceSet
+  __init__.py    public API and the version (single source of truth)
+  models.py      MeasurementType, AnalysisStatus, ReferenceSet, GENE_ID_TYPES
   mapping.py     Measurement, Observation, ColumnMapping
   dataset.py     Dataset, load_table
   _payload.py    multiobsanalysis body construction
-  auth.py        OAuth 2.0 + PKCE login, Credentials, TokenCache
-  client.py      IPAClient, AnalysisResults
-  cli.py         ipaapi console script
+  auth.py        OAuth 2.0 + PKCE, Credentials, TokenCache, refresh
+  client.py      IPAClient, error classification
+  history.py     the submission log
+  triage.py      submitted/ and failed/ filing
+  cli.py         the ipaapi console script
   errors.py      exception hierarchy
-tests/           offline unit tests (no network required)
-examples/        runnable end-to-end script
+tests/           offline; no network required
+examples/        runnable scripts and diagnostics
 ```
-
-## Tests
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
 
-The suite is fully offline: mapping validation, the exact parameter layout of
-the submission body, encoding of hostile characters, and status/ID parsing.
+The suite is fully offline — mapping validation, the exact parameter layout of
+the submission body, encoding of hostile characters, error classification,
+triage behaviour, token cache and refresh logic.
 
-## Status
+**Versioning.** The version lives only in `src/ipaapi/__init__.py`;
+`pyproject.toml` reads it at build time. Bump it there and nowhere else, and add
+a `CHANGELOG.md` entry. `ipaapi --version` reports the install path too, which
+is what actually answers "am I running the wheel I think I am".
 
-Early. The submission path is exercised end-to-end against the demo's 32,883-row
-sample dataset; the API surface may still change.
+### Differences from the demo
+
+- Column mapping by name in any order, validated before upload.
+- Request bodies are percent-encoded.
+- OAuth: no CPU-spinning wait loop, `state` is verified, logins time out, the
+  callback server is shut down, error redirects are handled, tokens are cached
+  and refreshed.
+- Submissions are never retried automatically — a retried POST could create a
+  duplicate analysis. GETs retry with backoff.
+- Typed exceptions; access tokens excluded from `repr()`.
+- No `install_dependencies()` shelling out to `pip3`.
+
+---
+
+## Status and licence
+
+Pre-1.0. Used in production against live IPA, but the API surface may still
+change; see `CHANGELOG.md`.
+
+`pyproject.toml` currently declares the licence as **Proprietary** and no
+`LICENSE` file is present — worth settling before this repo goes anywhere
+public.
+
+Not affiliated with or endorsed by QIAGEN. IPA is QIAGEN's product; this is an
+independent client for its public API. For API questions QIAGEN's contact is
+`AdvancedGenomicsSupport@qiagen.com`.

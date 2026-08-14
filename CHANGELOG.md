@@ -6,6 +6,20 @@ pre-1.0, the minor number is bumped for behaviour changes as well as features.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 0.4.1 — 2026-08-05
+
+### Documentation
+
+- **Extended README**, structured as a manual: quick start, full CLI reference,
+  recipes, a section on the undocumented parts of IPA, authentication including
+  headless use, Python API, troubleshooting table, and the wire format.
+- **Corrected again — the reference-set size rule does not hold in practice.**
+  0.4.0 reported §4.1.3.1's rule (ipkb below 2000 identifiers, dataset at 2000
+  or more) as fact. Checked against 37 completed analyses of 1,804–6,245
+  identifiers, *all* were scored against "Ingenuity Knowledge Base (Genes
+  Only)". The documented rule is therefore not predictive; set
+  `--reference-set` explicitly for anything you intend to compare.
+
 ## 0.4.0 — 2026-08-05
 
 Working from QIAGEN's official *IPA Integration Module (APIs)* documentation
@@ -14,7 +28,7 @@ trial were confirmed; two were wrong.
 
 ### Added
 
-- **`GENE_ID_TYPES`** — all 32 documented `geneidtype` values with the database
+- **`GENE_ID_TYPES`** — all 33 documented `geneidtype` values with the database
   each refers to (§3.1), exposed as `ipaapi submit --list-id-types`. A value
   outside the list is warned about, with a near-match suggestion, but still
   sent; IPA remains the authority.

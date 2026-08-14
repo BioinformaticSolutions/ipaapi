@@ -849,9 +849,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[r.value for r in ReferenceSet] + ["omit"],
         help="background the analysis is scored against. 'ipkb' is the Ingenuity "
         "Knowledge Base; 'dataset' is the genes you uploaded. 'omit' (default) "
-        "lets IPA choose, which it does BY SIZE: under 2000 identifiers it uses "
-        "ipkb, at 2000 or more it uses dataset. Set this explicitly if that "
-        "size rule is not what you want",
+        "lets IPA choose. The docs say it picks by size (ipkb under 2000 "
+        "identifiers, dataset at 2000+) but that has not been observed to hold, "
+        "so set it explicitly for anything you will compare against itself",
     )
     submit.add_argument(
         "--log-file",

@@ -167,15 +167,16 @@ class ReferenceSet(str, Enum):
     Values per the IPA Integration Module documentation (April 2026), §4.1.3.
 
     .. important::
-       **Omitting the parameter does not mean "use the Knowledge Base".** When
-       neither ``referenceset`` nor ``referencesettype`` is given, IPA chooses
-       by dataset size:
+       **Omitting the parameter leaves the choice to IPA, and the rule is not
+       reliable.** §4.1.3.1 says IPA picks by size when neither ``referenceset``
+       nor ``referencesettype`` is given -- :attr:`IPKB` below 2000 identifiers,
+       :attr:`DATASET` at 2000 or more.
 
-       - fewer than 2000 identifiers -> :attr:`IPKB`
-       - 2000 or more identifiers    -> :attr:`DATASET`
-
-       So a large pre-filtered hit list silently gets its own genes as the
-       background. Pass :attr:`IPKB` explicitly if that is not what you want.
+       That has *not* been observed to hold: submissions of 1,804 to 6,245
+       identifiers all came back scored against
+       "Ingenuity Knowledge Base (Genes Only)". Since the behaviour is not
+       predictable from the documentation, set this explicitly for any set of
+       analyses you intend to compare against each other.
 
     Attributes:
         DATASET: The uploaded dataset is the background. Appropriate when the
