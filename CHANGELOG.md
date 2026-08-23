@@ -7,6 +7,19 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 1.0.1 — 2026-08-05
+
+### Fixed
+
+- **An IPA outage is no longer reported as a bad parameter.** IPA's maintenance
+  page ("currently unavailable", "experiencing technical difficulties", "try
+  again later") is HTML, so it fell through to `MalformedRequestError` and the
+  message told the user to check `--reference-set` and `--ID` — sending them to
+  rewrite a command that was correct. New `ServiceUnavailableError`, also
+  raised on 502/503/504, says plainly that IPA is down, that nothing about the
+  command needs changing, and that re-running later resumes. Files are left in
+  place, as before.
+
 ## 1.0.0 — 2026-08-05
 
 First stable release. No code changes from 0.5.0 — the version marks that the

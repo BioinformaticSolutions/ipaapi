@@ -15,6 +15,7 @@ __all__ = [
     "QuotaExceededError",
     "MalformedRequestError",
     "AnalysisRefusedError",
+    "ServiceUnavailableError",
     "AnalysisError",
     "ResultsUnavailableError",
 ]
@@ -70,6 +71,18 @@ class MalformedRequestError(SubmissionError):
 
     Kept distinct so batch processing stops and leaves the files alone, rather
     than quarantining perfectly good data for a mistake in the command line.
+    """
+
+
+class ServiceUnavailableError(SubmissionError):
+    """IPA is down or having trouble -- nothing to do with the request.
+
+    Recognised by IPA's maintenance page ("currently unavailable", "technical
+    difficulties", "try again later") or a 502/503/504. The command line and
+    the data are fine; the only correct response is to wait and re-run.
+
+    Kept distinct because the alternative -- reporting a service outage as a
+    parameter error -- sends people rewriting a command that was never wrong.
     """
 
 

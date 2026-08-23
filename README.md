@@ -476,6 +476,7 @@ boilerplate and the page footer, and classifies what's left:
 | `Unknown GeneId Type (X)` | `MalformedRequestError` | stops; names the flag; moves nothing |
 | `Unable to run analysis: Analysis limit exceeded` | `QuotaExceededError` | stops; leaves remaining files for the next run |
 | `Unable to run analysis: …` (other) | `AnalysisRefusedError` | as above — reached the analysis logic, so not a parameter fault |
+| `currently unavailable` / `technical difficulties`, or 502/503/504 | `ServiceUnavailableError` | IPA is down; stops, moves nothing, says the command is fine |
 | anything else | `SubmissionError` | files that one under `failed/` |
 
 Quota matching is deliberately broad (`ipaapi.client.QUOTA_PATTERNS` plus HTTP
@@ -642,6 +643,8 @@ cp, ur, df = results                  # unpacks like the demo's ipa_results()
 | `--FC refers to column N, but the file has only M column(s)` | 1-based counting, or wrong `--skip-rows` | positions are 0-based, from the header |
 | `Every row is missing an identifier` | wrong column, or no header | check with `head -1 file \| tr '\t' '\n' \| nl -v0` |
 | `the analysis allowance appears to be exhausted` | daily/period limit | re-run later; files left in place resume |
+| `IPA appears to be down or having trouble` | IPA outage, not your command | wait and re-run the same command |
+| `Cannot listen on 127.0.0.1:8000` | stale login process, or another user mid-login | `ss -ltnp 'sport = :8000'`, then kill it if it's yours |
 | Login prompt on every run | token cache not writable | `export IPAAPI_TOKEN_FILE=...`; check for a root-owned cache |
 | `Could not open a browser automatically` | headless | `ssh -X`, or copy a token across |
 | `report` returns HTTP 500 on a succeeded analysis | unconfirmed; possibly add-on licence | open the analysis in IPA; see `examples/probe_interpret.py` |

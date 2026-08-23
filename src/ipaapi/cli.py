@@ -23,6 +23,7 @@ from .errors import (
     IPAError,
     MalformedRequestError,
     QuotaExceededError,
+    ServiceUnavailableError,
 )
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import GENE_ID_TYPES, MeasurementType, ReferenceSet
@@ -561,6 +562,7 @@ def cmd_submit(args) -> int:
     records: List[history.SubmissionRecord] = []
     quota_reached = False
     malformed = False
+    service_down = False
 
     for position, dataset in enumerate(datasets):
         source = pathlib.Path(dataset.source_path) if dataset.source_path else None
@@ -584,15 +586,17 @@ def cmd_submit(args) -> int:
             failures.append(f"{dataset.name}: malformed request")
             malformed = True
             break
-        except (QuotaExceededError, AnalysisRefusedError) as exc:
+        except (QuotaExceededError, AnalysisRefusedError, ServiceUnavailableError) as exc:
             # The file is fine; IPA will not run it right now. Leave this one
             # and everything after it for the next run.
             quota_reached = True
-            label = (
-                "Allowance exhausted"
-                if isinstance(exc, QuotaExceededError)
-                else "IPA declined to start the analysis"
-            )
+            service_down = isinstance(exc, ServiceUnavailableError)
+            if isinstance(exc, QuotaExceededError):
+                label = "Allowance exhausted"
+            elif isinstance(exc, ServiceUnavailableError):
+                label = "IPA is unavailable"
+            else:
+                label = "IPA declined to start the analysis"
             print(f"\n{label} while submitting {dataset.name}:\n{exc}",
                   file=sys.stderr)
             if triage is not None:
@@ -636,6 +640,8 @@ def cmd_submit(args) -> int:
             "Re-run the same command later; the files left in place are exactly "
             "the ones still to do."
         )
+        if service_down:
+            print("Nothing about your command needs changing.")
     if malformed:
         # Only claim nothing moved when nothing did -- earlier files in the
         # batch may well have been submitted and filed before this one failed.

@@ -459,3 +459,56 @@ def test_the_real_quota_rejection_is_classified_and_readable():
     # The reason survives; the boilerplate above and the chrome below do not.
     text = html_error_text(body)
     assert text == "Unable to run analysis: Analysis limit exceeded"
+
+
+# -- IPA being down is not a parameter problem ------------------------------
+
+OUTAGE = (
+    "<html><head><title>Error | IPA</title></head><body>"
+    "The page you are looking for is currently unavailable. The IPA site might "
+    "be experiencing technical difficulties. Please try the following: Click the "
+    "Refresh button on your browser, or try again later.</body></html>"
+)
+
+
+def test_an_outage_page_is_not_blamed_on_the_parameters():
+    """Reporting a service outage as a bad flag sends people rewriting a correct command."""
+    from ipaapi.errors import MalformedRequestError, ServiceUnavailableError
+
+    try:
+        IPAClient._parse_analysis_ids(FakeResponse(OUTAGE, 200), expected=1)
+    except MalformedRequestError:
+        raise AssertionError("an outage was classified as a malformed request")
+    except ServiceUnavailableError as exc:
+        message = str(exc)
+    assert "IPA appears to be down" in message
+    assert "not a problem with your command" in message
+    assert "--reference-set" not in message      # do not misdirect
+    assert "re-running the same command later" in message
+
+
+def test_gateway_errors_are_outages_too():
+    from ipaapi.client import looks_like_outage
+
+    assert looks_like_outage(503, "")
+    assert looks_like_outage(502, "")
+    assert looks_like_outage(504, "")
+    assert not looks_like_outage(400, "Unknown GeneId Type (hgnc)")
+
+
+def test_an_outage_leaves_every_file_in_place(workdir):
+    import tempfile
+
+    from ipaapi.errors import ServiceUnavailableError
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+
+    def submit(self, dataset, project, **kw):
+        raise ServiceUnavailableError("down", status_code=200, body=OUTAGE)
+
+    _run_submit(workdir, submit, log)
+
+    assert not (workdir / SUBMITTED_DIRNAME).exists()
+    assert not (workdir / FAILED_DIRNAME).exists()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        assert (workdir / name).exists()

@@ -21,6 +21,7 @@ from .errors import (
     MalformedRequestError,
     QuotaExceededError,
     ResultsUnavailableError,
+    ServiceUnavailableError,
     SubmissionError,
 )
 from .models import AnalysisStatus, ReferenceSet
@@ -34,6 +35,7 @@ __all__ = [
     "QUOTA_PATTERNS",
     "looks_like_quota",
     "looks_like_html",
+    "looks_like_outage",
     "html_error_text",
 ]
 
@@ -595,6 +597,25 @@ def _parameter_hint(body: str):
 #: run -- as opposed to being rejected on a parameter.
 _UNABLE_TO_RUN = re.compile(r"Unable to run analysis", re.IGNORECASE)
 
+#: IPA's maintenance/outage page. Nothing to do with the request, so reporting
+#: it as a parameter error sends people rewriting a correct command.
+_OUTAGE = re.compile(
+    r"currently unavailable"
+    r"|experiencing technical difficulties"
+    r"|technical difficulties"
+    r"|temporarily unavailable"
+    r"|service unavailable"
+    r"|try again later",
+    re.IGNORECASE,
+)
+
+
+def looks_like_outage(status_code: Optional[int], body: str) -> bool:
+    """Whether the response is IPA being down rather than rejecting the request."""
+    if status_code in (502, 503, 504):
+        return True
+    return bool(_OUTAGE.search(body or ""))
+
 
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
     """Raise the most specific submission error the response supports."""
@@ -606,6 +627,19 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
         detail = html_error_text(body) if looks_like_html(body) else excerpt
         raise QuotaExceededError(
             f"REJECTED: the analysis allowance appears to be exhausted.\n\n"
+            f"IPA said: {detail!r}",
+            status_code=status_code,
+            body=excerpt,
+        )
+
+    if looks_like_outage(status_code, body):
+        detail = html_error_text(body) if looks_like_html(body) else excerpt
+        raise ServiceUnavailableError(
+            "REJECTED: IPA appears to be down or having trouble.\n\n"
+            "This is not a problem with your command or your data -- IPA "
+            "returned its maintenance page rather than processing the request. "
+            "Nothing was submitted and no files were moved, so re-running the "
+            "same command later will pick up exactly where it stopped.\n\n"
             f"IPA said: {detail!r}",
             status_code=status_code,
             body=excerpt,
