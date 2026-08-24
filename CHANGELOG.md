@@ -7,6 +7,31 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 1.1.0 — 2026-08-05
+
+### Added
+
+- **Duplicate dataset names are detected before submitting.** IPA refuses a
+  dataset whose name already exists in a project, and reports it as *"The page
+  you are looking for is currently unavailable"* — wording that reads as an
+  outage. Because dataset names come from filenames, re-running a batch retried
+  names an earlier run had created, so the run died on its first file and
+  looked like a total service failure. It cost a day to find.
+
+  Established by experiment: the identical 2 KB request succeeded and then
+  failed twice; with unique dataset names three consecutive submissions all
+  succeeded. Not size, not rate limiting, not parameters, not an outage.
+
+  `submit` now checks the submission log for that project and dataset name
+  first, skips the file with an explanation, and files it under `submitted/`.
+  `--force` overrides.
+
+### Notes
+
+- The guard covers submissions made through this tool with the same log file.
+  A collision caused by another user or the IPA client still surfaces as the
+  misleading outage page; the troubleshooting table now says so.
+
 ## 1.0.1 — 2026-08-05
 
 ### Fixed

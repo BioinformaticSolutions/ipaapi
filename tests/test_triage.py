@@ -512,3 +512,111 @@ def test_an_outage_leaves_every_file_in_place(workdir):
     assert not (workdir / FAILED_DIRNAME).exists()
     for name in ("a.txt", "b.txt", "c.txt"):
         assert (workdir / name).exists()
+
+
+# -- duplicate dataset names ------------------------------------------------
+
+
+def test_a_dataset_already_in_the_project_is_skipped_not_resubmitted(workdir):
+    """IPA rejects a duplicate dataset name, reporting it as "page unavailable".
+
+    The submission log already knows what went where, so the collision can be
+    predicted instead of walked into -- and the file counts as done.
+    """
+    import tempfile
+    from unittest import mock
+
+    from ipaapi import cli, history
+    from ipaapi.auth import Credentials
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+    history.append(
+        [history.SubmissionRecord(analysis_id="43631092", project="P05",
+                                  dataset_name="a")],
+        path=log,
+    )
+
+    calls = []
+
+    def submit(self, dataset, project, **kw):
+        calls.append(dataset.name)
+        return ["999"]
+
+    client = IPAClient(Credentials(access_token="x"), retries=0)
+    args = cli.build_parser().parse_args(
+        ["submit", str(workdir), "--ID", "0:ensembl", "--FC", "1:logratio",
+         "--project", "P05", "--log-file", log]
+    )
+    with mock.patch.object(IPAClient, "submit", submit), mock.patch.object(
+        cli, "_client", lambda _: client
+    ):
+        cli.cmd_submit(args)
+
+    # 'a' was already in P05, so it never reached IPA...
+    assert "a" not in calls
+    assert sorted(calls) == ["b", "c"]
+    # ...but it still counts as done, so a re-run does not see it again.
+    assert (workdir / SUBMITTED_DIRNAME / "a.txt").exists()
+
+
+def test_force_resubmits_a_known_duplicate(workdir):
+    import tempfile
+    from unittest import mock
+
+    from ipaapi import cli, history
+    from ipaapi.auth import Credentials
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+    history.append(
+        [history.SubmissionRecord(analysis_id="1", project="P05", dataset_name="a")],
+        path=log,
+    )
+    calls = []
+
+    def submit(self, dataset, project, **kw):
+        calls.append(dataset.name)
+        return ["999"]
+
+    client = IPAClient(Credentials(access_token="x"), retries=0)
+    args = cli.build_parser().parse_args(
+        ["submit", str(workdir), "--ID", "0:ensembl", "--FC", "1:logratio",
+         "--project", "P05", "--log-file", log, "--force"]
+    )
+    with mock.patch.object(IPAClient, "submit", submit), mock.patch.object(
+        cli, "_client", lambda _: client
+    ):
+        cli.cmd_submit(args)
+
+    assert "a" in calls
+
+
+def test_the_same_name_in_a_different_project_is_not_a_collision(workdir):
+    """IPA scopes dataset names per project, so a different project is fine."""
+    import tempfile
+    from unittest import mock
+
+    from ipaapi import cli, history
+    from ipaapi.auth import Credentials
+
+    log = str(pathlib.Path(tempfile.mkdtemp()) / "log.tsv")
+    history.append(
+        [history.SubmissionRecord(analysis_id="1", project="OTHER", dataset_name="a")],
+        path=log,
+    )
+    calls = []
+
+    def submit(self, dataset, project, **kw):
+        calls.append(dataset.name)
+        return ["999"]
+
+    client = IPAClient(Credentials(access_token="x"), retries=0)
+    args = cli.build_parser().parse_args(
+        ["submit", str(workdir), "--ID", "0:ensembl", "--FC", "1:logratio",
+         "--project", "P05", "--log-file", log]
+    )
+    with mock.patch.object(IPAClient, "submit", submit), mock.patch.object(
+        cli, "_client", lambda _: client
+    ):
+        cli.cmd_submit(args)
+
+    assert "a" in calls

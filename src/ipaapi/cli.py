@@ -332,6 +332,21 @@ def discover_files(
 _SINGLE_FILE_FLAGS = ("observation", "analysis_name", "dataset_name")
 
 
+def _already_submitted(project: str, dataset_name: str, log_file) -> Optional[dict]:
+    """Return the earlier submission of this dataset to this project, if any.
+
+    IPA refuses a dataset whose name already exists in a project, and reports it
+    as "The page you are looking for is currently unavailable" -- wording that
+    reads as an outage and sends people looking in entirely the wrong place.
+    Since every submission is logged locally, the collision can be predicted
+    rather than walked into.
+    """
+    for row in history.read(log_file):
+        if row.get("project") == project and row.get("dataset_name") == dataset_name:
+            return row
+    return None
+
+
 def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]:
     """Discover files, build the mapping for each, and validate them.
 
@@ -560,12 +575,31 @@ def cmd_submit(args) -> int:
     analysis_ids: List[str] = []
     failures: List[str] = []
     records: List[history.SubmissionRecord] = []
+    skipped: List[str] = []
     quota_reached = False
     malformed = False
     service_down = False
 
     for position, dataset in enumerate(datasets):
         source = pathlib.Path(dataset.source_path) if dataset.source_path else None
+
+        prior = (
+            None
+            if args.force
+            else _already_submitted(args.project, dataset.name or "", args.log_file)
+        )
+        if prior is not None:
+            print(
+                f"skipping {dataset.name}: already submitted to {args.project!r} on "
+                f"{prior.get('timestamp', 'an earlier run')} as analysis "
+                f"{prior.get('analysis_id', '?')}. IPA would reject a second dataset "
+                "of the same name. Use --force to submit it again anyway."
+            )
+            skipped.append(dataset.name or "")
+            if triage is not None and source is not None:
+                triage.mark_submitted(source)
+            continue
+
         try:
             submitted = client.submit(
                 dataset,
@@ -659,7 +693,19 @@ def cmd_submit(args) -> int:
                 file=sys.stderr,
             )
 
+    if skipped:
+        print(
+            f"\n{len(skipped)} file(s) were already in {args.project!r} and were "
+            "skipped rather than resubmitted."
+        )
+
     if not analysis_ids:
+        if skipped and not failures and not quota_reached:
+            print(
+                f"\nNothing new to submit -- all {len(skipped)} file(s) are already "
+                f"in {args.project!r}."
+            )
+            return 0
         print("\nNothing was submitted successfully.", file=sys.stderr)
         return 1
 
@@ -865,6 +911,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="submission log to append to (default: "
         "~/.local/state/ipaapi/submissions.tsv)",
+    )
+    submit.add_argument(
+        "--force",
+        action="store_true",
+        help="submit even if the log shows this dataset already went to this "
+        "project. IPA rejects a duplicate dataset name, so this normally fails",
     )
     submit.add_argument(
         "--dry-run",

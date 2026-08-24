@@ -394,6 +394,38 @@ A type outside the documented list produces a warning with a near-match
 suggestion but is still sent, since IPA is the authority and the list will age.
 An unrecognised value fails before anything is uploaded, and IPA names it.
 
+### Duplicate dataset names
+
+**IPA refuses to create a dataset whose name already exists in a project — and
+reports it as "The page you are looking for is currently unavailable."** The
+wording says outage; the cause is a name collision. This is the single most
+misleading response the API produces, and it cost a full day to identify.
+
+Verified: the same 2 KB request, byte for byte, succeeded and then failed twice
+in a row. With unique dataset names, three consecutive submissions all
+succeeded.
+
+Since dataset names come from filenames, re-running a batch retries names an
+earlier run already created — so the run dies on its *first* file and looks
+like a total outage.
+
+The package prevents this using the submission log. Before uploading, it checks
+whether that dataset name already went to that project:
+
+```
+skipping SampleA_DEG: already submitted to 'Study1' on 2026-08-05T08:35:53-06:00
+as analysis 43595039. IPA would reject a second dataset of the same name.
+Use --force to submit it again anyway.
+```
+
+Skipped files are filed under `submitted/`, because they are. `--force`
+overrides, though IPA will normally reject it.
+
+The guard only knows about submissions made through this tool with the same log
+file. If you hit the collision anyway — a colleague's upload, or the IPA client
+— the fix is a different `--project`, a different `--dataset-name`, or deleting
+the existing dataset in IPA.
+
 ### The reference set
 
 The background enrichment is scored against — the denominator of the Fisher's
@@ -643,7 +675,8 @@ cp, ur, df = results                  # unpacks like the demo's ipa_results()
 | `--FC refers to column N, but the file has only M column(s)` | 1-based counting, or wrong `--skip-rows` | positions are 0-based, from the header |
 | `Every row is missing an identifier` | wrong column, or no header | check with `head -1 file \| tr '\t' '\n' \| nl -v0` |
 | `the analysis allowance appears to be exhausted` | daily/period limit | re-run later; files left in place resume |
-| `IPA appears to be down or having trouble` | IPA outage, not your command | wait and re-run the same command |
+| `IPA appears to be down or having trouble` | IPA outage — **or a duplicate dataset name**, which IPA reports identically | check `ipaapi history --project X` for that dataset name; otherwise wait |
+| Batch dies on the *first* file after an earlier run | dataset names already exist in the project | expected — 1.1.0 skips them automatically; before that, use a new `--project` |
 | `Cannot listen on 127.0.0.1:8000` | stale login process, or another user mid-login | `ss -ltnp 'sport = :8000'`, then kill it if it's yours |
 | Login prompt on every run | token cache not writable | `export IPAAPI_TOKEN_FILE=...`; check for a root-owned cache |
 | `Could not open a browser automatically` | headless | `ssh -X`, or copy a token across |
