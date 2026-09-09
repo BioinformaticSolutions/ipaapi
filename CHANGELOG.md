@@ -7,6 +7,67 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 1.2.0 — 2026-08-24
+
+### Fixed
+
+- **Long observation names are shortened automatically.** IPA rejects an
+  observation name past roughly 65 characters and reports it as *"The page you
+  are looking for is currently unavailable"* — the same page it returns for a
+  duplicate dataset name, and for a genuine outage. Because the observation
+  name defaults to the filename, descriptive pipeline output names tripped it,
+  and a batch died on its first file looking like a total service failure.
+
+  Established by A/B on one file, holding project, reference set and data
+  constant: a 25-character observation name with an 82-character dataset name
+  was accepted (it reached IPA's allowance check); a 25-character *dataset*
+  name with an 82-character observation name was rejected. So the limit is
+  specific to the observation — a long dataset name is fine.
+
+  Names are now brought under 60 characters automatically, removing what
+  carries the least meaning first. Two parts of a pipeline filename matter —
+  the contrast (`Estrus_vs_2dpp`) and the cell type the comparison came from
+  (`Immature_cortical_ovarian_stroma`) — and everything appended about how the
+  pipeline ran does not.
+
+  Paralome output is cut on its own structure rather than by heuristic. It
+  names files
+  `<contrast>_<celltype>_<method>_<test>_significant_<threshold>_<assay>`, so
+  the `significant` literal anchors the cut exactly: drop it and everything
+  after, drop the test immediately before it, drop the aggregation method. No
+  list of test names is needed — the test is whatever token precedes the
+  anchor, so `wilcox` works as well as `t`. Methods are matched as whole
+  phrases in that one position only, since a cell type of `Naive_T_cell`
+  shares both words with the `naive_cell` method.
+
+  Files from anything else fall back to generic metadata removal, then any
+  suffix the batch shares, then the shared prefix, and only as a last resort a
+  two-ended cut marked with `..`.
+
+  Comparison is token by token, so `Mature` is never read as a prefix of
+  `Immature` and `cell_type` is never left as `cell_t`. Any step is abandoned
+  if it would make two names identical or leave one unreadable, since
+  observation names are what IPA lists side by side in a comparison analysis.
+  Names already within the limit are untouched, and the dataset and analysis
+  always keep the full filename.
+
+- Rejection guidance now names the observation length first, since it is the
+  cause hardest to guess from what IPA returns.
+
+### Added
+
+- **`--strip TEXT`**, repeatable, removes text from observation names before
+  shortening — for a pipeline whose suffix the built-in list does not cover.
+  Ignored as a whole if applying it would leave the names empty, unreadable, or
+  no longer distinct.
+
+### Notes
+
+- This is a *second*, independent cause of the same misleading page — 1.1.0
+  fixed duplicate dataset names. Having already attributed that page once made
+  this one harder to see, not easier. If a batch dies on its first file with
+  that wording, both causes are worth ruling out.
+
 ## 1.1.0 — 2026-08-05
 
 ### Added

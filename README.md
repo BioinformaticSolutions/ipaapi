@@ -202,7 +202,8 @@ Used by `validate` and `submit`.
 | `--sep` | `CHAR` | field delimiter (sniffed from the header line by default) |
 | `--pattern` | `TEXT` | when PATH is a directory: substring or glob selecting files |
 | `--recursive` | flag | search subdirectories too |
-| `--observation` | `NAME` | observation name in IPA (default: the filename). Single file only |
+| `--observation` | `NAME` | observation name in IPA (default: the filename). Single file only. Shortened to 60 characters if needed — see [long observation names](#long-observation-names) |
+| `--strip` | `TEXT` | remove TEXT from observation names before shortening. Repeatable |
 | `--no-range-check` | flag | skip the value-range validation |
 | `--list-id-types` | flag | print all 33 gene ID types and exit |
 
@@ -425,6 +426,115 @@ The guard only knows about submissions made through this tool with the same log
 file. If you hit the collision anyway — a colleague's upload, or the IPA client
 — the fix is a different `--project`, a different `--dataset-name`, or deleting
 the existing dataset in IPA.
+
+### Long observation names
+
+**IPA rejects a long observation name, and reports it as "The page you are
+looking for is currently unavailable."** The same misleading page as a
+duplicate dataset name, from an entirely unrelated cause — which is what made
+this one expensive to find: the obvious explanation had already been used up.
+
+The observation name defaults to the filename, so descriptive pipeline output
+names run past the limit without anyone choosing a long name. A long *dataset*
+name is fine; only the observation is affected.
+
+Established by A/B on one file, holding project, reference set and data
+constant:
+
+| dataset name | observation name | result |
+| --- | --- | --- |
+| short (25) | **long (82)** | rejected as an "outage" |
+| **long (82)** | short (25) | accepted — reached IPA's allowance check |
+
+65 characters is known good and 82 known bad; the exact limit is undocumented.
+Since 1.2.0 the observation name is brought under 60 characters automatically.
+
+**What gets removed is chosen by what it means, not by where it sits.** Two
+parts of a Paralome filename carry information: the contrast (`Estrus_vs_2dpp`)
+and the cell type the comparison was computed from
+(`Immature_cortical_ovarian_stroma`). Everything the pipeline appends about how
+it ran — `_naive_cell_t_significant_p0.05_rna`, `_pseudobulk_t_significant_p0.05_rna` —
+is disposable. So that is what goes first:
+
+```
+Estrus_vs_2dpp_Immature_cortical_ovarian_stroma_naive_cell_t_significant_p0.05_rna
+ -> Estrus_vs_2dpp_Immature_cortical_ovarian_stroma
+
+Estrus_vs_2dpp_Glandular_epithelium_pseudobulk_t_significant_p0.05_rna
+ -> Estrus_vs_2dpp_Glandular_epithelium
+```
+
+**Paralome output is cut on its own structure, not by guesswork.** Paralome
+names its files
+`<contrast>_<celltype>_<method>_<test>_significant_<threshold>_<assay>`, and
+the `significant` literal is a reliable anchor:
+
+```
+Estrus_vs_2dpp_Immature_cortical_ovarian_stroma | naive_cell | t | significant_p0.05_rna
+Estrus_vs_2dpp_Glandular_epithelium             | pseudobulk | t | significant_p0.05_rna
+```
+
+Working backwards from the anchor: drop it and everything after, drop the
+statistical test immediately before it, then drop the aggregation method. The
+test needs no list of names — it is simply the token before the anchor, so
+`wilcox` works as well as `t` without anyone maintaining a vocabulary. Methods
+are matched as **whole phrases in that one position only**, because a cell type
+of `Naive_T_cell` shares both words with the `naive_cell` method and loose
+matching cut it to `Naive_T`.
+
+Removal is graded, least damaging first, and stops as soon as the names fit:
+
+1. anything named with `--strip`
+2. the Paralome tail, cut at its anchor as above
+3. trailing pipeline metadata, for files from anything else — tokens like
+   `significant`, `deseq2`, `filtered`, and cutoffs in any of the shapes
+   `p0.05`, `fdr0.01`, `padj0.05`, `0.05`, read right to left and stopping at
+   the first token that isn't recognisable as a setting
+4. the suffix every file in the batch happens to share
+5. the prefix every file shares — this costs the contrast, so it is late
+6. a two-ended cut with `..` marking the gap, on a token boundary
+
+Steps 2 to 4 always run together rather than stopping the moment the names
+merely fit, since half a removed suffix reads worse than either whole. Comparison
+is **whole tokens at a time**, so `Mature` is never treated as a prefix of
+`Immature` and `cell_type` is never left as `cell_t`. Names already within the
+limit are returned untouched.
+
+Any step is abandoned if it would make two names identical, or leave one under
+four characters or without a letter — reducing files to `1` and `2` keeps them
+distinct and makes the analysis unreadable. Distinctness is the property being
+protected: observation names are what IPA lists side by side in a comparison
+analysis, so two files reduced to the same label would be worse than a long name.
+
+Everything removed is printed:
+
+```
+note: shortened 2 observation names. IPA rejects a long observation name and
+reports it as an outage, so this is not optional.
+      Datasets and analyses keep the full filename; only the observation label
+      inside the analysis is shorter.
+      Estrus_vs_2dpp_Glandular_epithelium_pseudobulk_t_significant_p0.05_rna
+   -> Estrus_vs_2dpp_Glandular_epithelium
+```
+
+If your pipeline's suffix is not recognised, name it explicitly. `--strip` is
+repeatable, applied before anything else, and ignored as a whole if it would
+leave the names unusable:
+
+```bash
+ipaapi submit ~/data --ID 1:mousesymeg --FC 4:foldchange --skip-rows 1 \
+    --project Study --strip _significant_p0.05_rna
+```
+
+Because steps 4 and 5 depend on the other files in the run, **the same file
+submitted in a different batch can get a different observation label**. Steps 1 to 3
+do not — they read only the name in front of them, which is why a
+single-file submit shortens as well as a batch does. The dataset and analysis
+always keep the full filename, so `ipaapi history` and the IPA project view are
+unaffected.
+
+`--observation` sets the name explicitly for a single file and is shortened the
+same way if it needs to be.
 
 ### The reference set
 
@@ -675,7 +785,8 @@ cp, ur, df = results                  # unpacks like the demo's ipa_results()
 | `--FC refers to column N, but the file has only M column(s)` | 1-based counting, or wrong `--skip-rows` | positions are 0-based, from the header |
 | `Every row is missing an identifier` | wrong column, or no header | check with `head -1 file \| tr '\t' '\n' \| nl -v0` |
 | `the analysis allowance appears to be exhausted` | daily/period limit | re-run later; files left in place resume |
-| `IPA appears to be down or having trouble` | IPA outage — **or a duplicate dataset name**, which IPA reports identically | check `ipaapi history --project X` for that dataset name; otherwise wait |
+| `IPA appears to be down or having trouble` | IPA outage — **or a duplicate dataset name, or a long observation name**, all reported identically | `ipaapi --version` (1.2.0+ handles the name length); check `ipaapi history --project X` for the dataset name; otherwise wait |
+| Batch dies on the first file, names come from long filenames | observation name too long | upgrade to 1.2.0+, or pass a short `--observation` |
 | Batch dies on the *first* file after an earlier run | dataset names already exist in the project | expected — 1.1.0 skips them automatically; before that, use a new `--project` |
 | `Cannot listen on 127.0.0.1:8000` | stale login process, or another user mid-login | `ss -ltnp 'sport = :8000'`, then kill it if it's yours |
 | Login prompt on every run | token cache not writable | `export IPAAPI_TOKEN_FILE=...`; check for a root-owned cache |

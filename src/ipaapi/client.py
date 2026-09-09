@@ -588,8 +588,15 @@ def _parameter_hint(body: str):
         )
     return (
         "REJECTED: IPA would not accept one of the submission parameters.",
-        "--reference-set and the --ID type are the usual culprits. The response "
-        "below is the only description IPA gives.",
+        "A long observation name is the most likely cause, and the hardest to "
+        "guess: IPA rejects one and reports it as an outage page rather than a "
+        "parameter error. Anything past roughly 65 characters is at risk, and "
+        "since the observation name defaults to the filename, long filenames "
+        "trip it. A long *dataset* name is fine -- only the observation matters. "
+        "Since 1.2.0 the name is shortened automatically, so an older build is "
+        "worth ruling out first (ipaapi --version).\n"
+        "Failing that, --reference-set and the --ID type are the other "
+        "candidates. The response below is the only description IPA gives.",
     )
 
 

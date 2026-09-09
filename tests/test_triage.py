@@ -355,7 +355,7 @@ def test_other_html_errors_keep_the_generic_advice():
         IPAClient._parse_analysis_ids(FakeResponse(body, 200), expected=1)
     except MalformedRequestError as exc:
         assert str(exc).startswith("REJECTED:")
-        assert "--reference-set and the --ID type are the usual culprits" in str(exc)
+        assert "long observation name" in str(exc)
 
 
 def test_advertised_id_types_come_from_the_documented_list():

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import pathlib
+import re
 import sys
 from typing import List, Optional, Sequence, Tuple
 
@@ -41,6 +42,20 @@ _GLOB_CHARS = set("*?[")
 # any more: an earlier hand-made list of "common" types walked users straight
 # into failed submissions, because plausible names like 'genesymbol' and 'hgnc'
 # are not accepted while 'hugo' is.
+
+#: Longest observation name observed to be accepted by IPA.
+#:
+#: A long ``obs1name`` is rejected, and reported as "The page you are looking
+#: for is currently unavailable" -- wording that reads as an outage and cost a
+#: full working day to attribute correctly. Established by A/B: with the same
+#: file, project and data, a 25-character observation name was accepted while
+#: an 82-character one was rejected; a long *dataset* name in the same request
+#: was fine, so the limit is specific to the observation.
+#:
+#: 65 characters is known good and 82 known bad, so the true limit lies between.
+#: The cap is set below the known-good value to leave room, since IPA gives no
+#: usable diagnostic when it is exceeded.
+MAX_OBSERVATION_NAME = 60
 
 #: A short list for help text; the full mapping is in GENE_ID_TYPES.
 COMMON_ID_TYPES = ("ensembl", "hugo", "entrezgene", "refseq", "swissprot")
@@ -347,6 +362,369 @@ def _already_submitted(project: str, dataset_name: str, log_file) -> Optional[di
     return None
 
 
+#: Characters treated as word boundaries when trimming a name, so a cut never
+#: lands mid-token and turns "cell_type" into "cell_t".
+#:
+#: A period is deliberately not one of them: it appears *inside* tokens like
+#: "p0.05", and splitting there leaves "p0" and "05", neither recognisable as
+#: the cutoff it came from.
+_SPLIT_SEPARATORS = "_- "
+
+#: Characters to clean off the ends of a name once something has been removed.
+#: A period belongs here even though it is not a split point, since a name
+#: should not be left starting or ending with one.
+_NAME_SEPARATORS = "_-. "
+
+
+def _split_tokens(name: str) -> List[str]:
+    """Split on separators, keeping them, so a name can be rebuilt exactly."""
+    tokens: List[str] = []
+    current = ""
+    for char in name:
+        if char in _SPLIT_SEPARATORS:
+            if current:
+                tokens.append(current)
+                current = ""
+            tokens.append(char)
+        else:
+            current += char
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+def shared_affixes(names: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """Return the leading and trailing tokens common to *every* name.
+
+    Boilerplate is what the batch has in common: a pipeline that writes
+    ``Estrus_vs_2dpp_<tissue>_significant_p0.05_rna.csv`` puts the same words at
+    both ends of every file and the distinguishing content in the middle. Those
+    ends are exactly what can be dropped without losing the ability to tell two
+    observations apart.
+
+    Comparison is token-wise, so a partial word is never treated as shared.
+    """
+    if len(names) < 2:
+        return [], []
+
+    token_lists = [_split_tokens(name) for name in names]
+    shortest = min(len(t) for t in token_lists)
+
+    prefix: List[str] = []
+    for index in range(shortest):
+        token = token_lists[0][index]
+        if all(t[index] == token for t in token_lists):
+            prefix.append(token)
+        else:
+            break
+
+    suffix: List[str] = []
+    for index in range(1, shortest - len(prefix) + 1):
+        token = token_lists[0][-index]
+        if all(t[-index] == token for t in token_lists):
+            suffix.append(token)
+        else:
+            break
+    suffix.reverse()
+    return prefix, suffix
+
+
+#: A stripped name shorter than this is treated as having lost its meaning --
+#: reducing files to "1" and "2" keeps them distinct but makes the analysis
+#: unreadable, which defeats the purpose.
+MIN_STRIPPED_NAME = 4
+
+#: Trailing tokens that describe how a file was *processed* rather than what it
+#: contains, and so can be dropped when a name has to be shortened.
+#:
+#: Analysis pipelines append their settings to the filename -- Paralome writes
+#: ``_naive_cell_t_significant_p0.05_rna`` and ``_pseudobulk_t_significant_p0.05_rna``
+#: -- while the front of the name carries the experimental design: the contrast
+#: and the cell type it was computed from. Those two are what a reader needs and
+#: what must survive.
+#:
+#: Only consulted when a name is over the limit, and everything removed is
+#: printed. Use --strip for a pipeline whose suffixes are not covered here.
+DISPOSABLE_TOKENS = frozenset(
+    {
+        "significant", "sig", "signif",
+        "pseudobulk", "bulk", "sc", "singlecell",
+        "naive", "cell", "cells", "celltype",
+        "t", "wilcox", "wilcoxon", "deseq", "deseq2", "edger", "limma",
+        "rna", "atac", "dge", "deg", "degs",
+        "filtered", "filter", "results", "result", "output", "out",
+        "padj", "pval", "pvalue", "fdr", "qval", "adj",
+        "up", "down", "all",
+    }
+)
+
+#: A trailing cutoff such as ``p0.05``, ``fdr0.01`` or ``0.05``.
+_CUTOFF_TOKEN = re.compile(r"^(p|q|padj|fdr|adj|log2fc|fc|lfc)?[0-9]*\.?[0-9]+$", re.IGNORECASE)
+
+
+def _is_disposable(token: str) -> bool:
+    """Does this token describe processing rather than biology?"""
+    lowered = token.lower()
+    return lowered in DISPOSABLE_TOKENS or bool(_CUTOFF_TOKEN.match(lowered))
+
+
+def drop_disposable_suffix(name: str) -> str:
+    """Remove trailing pipeline metadata, stopping at the first real word.
+
+    Works right to left and stops as soon as a token is not recognisable as
+    processing metadata, so the cell type at the end of the meaningful part is
+    never crossed.
+    """
+    tokens = _split_tokens(name)
+    while tokens:
+        last = tokens[-1]
+        if last in _SPLIT_SEPARATORS:
+            tokens.pop()
+            continue
+        if _is_disposable(last):
+            tokens.pop()
+            continue
+        break
+    return "".join(tokens).strip(_NAME_SEPARATORS) or name
+
+
+#: The literal Paralome writes into every output filename, immediately after
+#: the statistical test.
+#:
+#: Paralome names its output
+#: ``<contrast>_<celltype>_<method>_<test>_significant_<threshold>_<assay>``, as in
+#: ``Estrus_vs_2dpp_Immature_cortical_ovarian_stroma_naive_cell_t_significant_p0.05_rna``.
+#: Only the contrast and the cell type describe the biology; everything from the
+#: method rightwards describes how the numbers were produced.
+#:
+#: Anchoring on this literal makes the cut exact rather than a guess, and needs
+#: no list of test names -- the test is simply the token before it.
+PARALOME_ANCHOR = "significant"
+
+#: Aggregation methods Paralome puts between the cell type and the test.
+#:
+#: Matched as whole phrases, not as loose words, and only in the one position
+#: directly before the test token. Both restrictions matter: a cell type of
+#: ``Naive_T_cell`` shares words with the ``naive_cell`` method, and treating
+#: those words as disposable wherever they appear would cut it to ``Naive_T``.
+#:
+#: Extend this, or use --strip, if Paralome grows another method.
+PARALOME_METHODS = (
+    ("naive", "cell"),
+    ("single", "cell"),
+    ("pseudobulk",),
+    ("bulk",),
+)
+
+
+def _words(tokens: Sequence[str]) -> List[int]:
+    """Indices of the real words in a token list, skipping separators."""
+    return [i for i, t in enumerate(tokens) if t not in _SPLIT_SEPARATORS]
+
+
+def strip_paralome_suffix(name: str) -> str:
+    """Cut a Paralome filename back to the contrast and the cell type.
+
+    Works backwards from the ``significant`` anchor: drop it and everything
+    after it, drop the statistical test immediately before it, then drop the
+    aggregation method if one is there.
+
+    Returns the name unchanged if the anchor is absent -- the file did not come
+    from Paralome, and the generic rules should handle it instead.
+    """
+    tokens = _split_tokens(name)
+    words = _words(tokens)
+
+    position = None
+    for index in reversed(range(len(words))):
+        if tokens[words[index]].lower() == PARALOME_ANCHOR:
+            position = index
+            break
+    if position is None or position < 2:
+        # No anchor, or nothing would be left once the test is removed.
+        return name
+
+    cut = position - 1  # the statistical test
+
+    # At most one method, matched as a whole phrase ending where the test began.
+    lowered = [tokens[i].lower() for i in words]
+    for method in sorted(PARALOME_METHODS, key=len, reverse=True):
+        start = cut - len(method)
+        if start > 0 and tuple(lowered[start:cut]) == method:
+            cut = start
+            break
+
+    return "".join(tokens[: words[cut]]).strip(_NAME_SEPARATORS) or name
+
+
+def _usable(stripped: Sequence[str], original: Sequence[str]) -> bool:
+    """Is this set of shortened names still worth having?
+
+    Three things have to hold: nothing empty, every name still distinct (the
+    point is telling observations apart in an IPA comparison analysis), and
+    enough left to read.
+    """
+    if not all(stripped):
+        return False
+    if len(set(stripped)) != len(set(original)):
+        return False
+    return all(
+        len(name) >= MIN_STRIPPED_NAME and any(c.isalpha() for c in name)
+        for name in stripped
+    )
+
+
+def strip_shared_suffix(names: Sequence[str]) -> List[str]:
+    """Drop the trailing tokens every name in the batch has in common."""
+    _, suffix = shared_affixes(names)
+    end = len("".join(suffix))
+    if not end:
+        return list(names)
+    candidate = [name[: len(name) - end].strip(_NAME_SEPARATORS) for name in names]
+    return candidate if _usable(candidate, names) else list(names)
+
+
+def strip_shared_prefix(names: Sequence[str]) -> List[str]:
+    """Drop the leading tokens every name has in common.
+
+    A last resort. The front of a filename usually carries the contrast --
+    ``Estrus_vs_2dpp`` -- which is one of the two things a reader needs, so this
+    runs only when removing pipeline metadata has not freed up enough room.
+    """
+    prefix, _ = shared_affixes(names)
+    start = len("".join(prefix))
+    if not start:
+        return list(names)
+    candidate = [name[start:].strip(_NAME_SEPARATORS) for name in names]
+    return candidate if _usable(candidate, names) else list(names)
+
+
+def trim_name(name: str, limit: int = MAX_OBSERVATION_NAME, marker: str = "..") -> str:
+    """Cut a name to *limit* characters, keeping both ends.
+
+    The last resort, once removing pipeline metadata has not freed up enough
+    room. Both ends are kept because by this point both are carrying meaning --
+    the contrast at the front, the cell type at the back. The cut lands on a
+    token boundary so no word is left as a fragment, and the marker makes it
+    obvious something was removed rather than leaving a name that looks
+    complete but is not.
+    """
+    name = (name or "").strip()
+    if len(name) <= limit:
+        return name
+
+    budget = limit - len(marker)
+    head_budget = budget * 3 // 5
+    tokens = _split_tokens(name)
+
+    head = ""
+    for token in tokens:
+        if len(head) + len(token) > head_budget:
+            break
+        head += token
+    head = head.strip(_NAME_SEPARATORS)
+
+    tail = ""
+    for token in reversed(tokens):
+        if len(head) + len(tail) + len(token) > budget:
+            break
+        tail = token + tail
+    tail = tail.strip(_NAME_SEPARATORS)
+
+    if not head and not tail:  # a single token longer than the limit; cut it
+        return name[:limit]
+    return f"{head}{marker}{tail}" if tail else f"{head}{marker}"
+
+
+def observation_names(
+    names: Sequence[str],
+    limit: int = MAX_OBSERVATION_NAME,
+    strip: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Turn filenames into observation names IPA will accept.
+
+    Two things in a pipeline filename matter to whoever reads the analysis: the
+    contrast (``Estrus_vs_2dpp``) and what it was computed from
+    (``Immature_cortical_ovarian_stroma``). Everything the pipeline appends
+    about how it ran is disposable. So removal is graded, least damaging first,
+    and stops the moment the names fit:
+
+    1. anything named with ``--strip``
+    2. the Paralome tail, cut exactly at its ``significant`` anchor
+    3. trailing pipeline metadata, for files from anything else
+    4. the suffix every file in the batch shares
+    5. the prefix every file shares -- this costs the contrast, so it is late
+    6. a two-ended cut with ``..``, which costs part of both
+
+    Names already within the limit are returned untouched.
+    """
+    names = list(names)
+
+    # Nothing is rewritten unless it has to be -- except when --strip was given,
+    # which is the user asking for a rewrite regardless of length.
+    if not strip and all(len(name) <= limit for name in names):
+        return names
+
+    if strip:
+        # Applied together and judged once. Validating each pattern separately
+        # can accept the first and reject the second, leaving names half
+        # stripped -- asymmetric, and worse than not stripping at all.
+        candidate = list(names)
+        for text in strip:
+            candidate = [n.replace(text, "") for n in candidate]
+        candidate = [
+            re.sub(r"[_\-.]{2,}", "_", n).strip(_NAME_SEPARATORS) for n in candidate
+        ]
+        if _usable(candidate, names):
+            names = candidate
+        else:
+            print(
+                "note: --strip ignored -- applying it would leave the observation "
+                "names empty, unreadable, or no longer distinct from each other.",
+                file=sys.stderr,
+            )
+
+    # Pipeline metadata goes first and goes completely -- both the tokens
+    # recognisable as settings and whatever tail the whole batch happens to
+    # share. Doing these together matters: stopping as soon as the names merely
+    # fit would leave half a suffix behind, which is worse than either whole.
+    for step in (lambda ns: [strip_paralome_suffix(n) for n in ns],
+                 lambda ns: [drop_disposable_suffix(n) for n in ns],
+                 strip_shared_suffix):
+        candidate = step(names)
+        if _usable(candidate, names):
+            names = candidate
+
+    if all(len(name) <= limit for name in names):
+        return names
+
+    # Only now start taking things a reader wanted.
+    candidate = strip_shared_prefix(names)
+    if _usable(candidate, names):
+        names = candidate
+    if all(len(name) <= limit for name in names):
+        return names
+
+    return [trim_name(name, limit) for name in names]
+
+
+def _report_shortened_names(requested: Sequence[str], resolved: Sequence[str]) -> None:
+    """Say what was renamed and why -- once for the batch, not once per file."""
+    changed = [(was, now) for was, now in zip(requested, resolved) if was != now]
+    if not changed:
+        return
+    noun = "name" if len(changed) == 1 else "names"
+    print(
+        f"note: shortened {len(changed)} observation {noun}. IPA rejects a long "
+        f"observation name and reports it as an outage, so this is not optional.\n"
+        f"      Datasets and analyses keep the full filename; only the "
+        f"observation label inside the analysis is shorter."
+    )
+    for was, now in changed:
+        print(f"      {was}\n   -> {now}")
+    print()
+
+
 def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]:
     """Discover files, build the mapping for each, and validate them.
 
@@ -366,6 +744,13 @@ def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]
                     "Names are taken from each filename; use --project to group them."
                 )
 
+    # Observation names are decided for the batch as a whole, because what is
+    # safe to drop from one name depends on what the others contain.
+    requested = [getattr(args, "observation", None) or path.stem for path in paths]
+    resolved = observation_names(requested, strip=getattr(args, "strip", None))
+    _report_shortened_names(requested, resolved)
+    names = dict(zip(paths, resolved))
+
     datasets: List[Dataset] = []
     problems: List[Tuple[pathlib.Path, str]] = []
     for path in paths:
@@ -375,7 +760,7 @@ def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]
                 columns=list(frame.columns),
                 id_specs=args.ID,
                 fc_spec=args.FC,
-                observation_name=getattr(args, "observation", None) or path.stem,
+                observation_name=names[path],
             )
             dataset = Dataset.from_frame(
                 frame,
@@ -407,6 +792,16 @@ def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
         "matches as a substring (SampleA finds SampleA_DEG.txt); text containing "
         "* ? or [ is treated as a glob. Default: "
         + ", ".join(TABLE_PATTERNS),
+    )
+    parser.add_argument(
+        "--strip",
+        action="append",
+        default=None,
+        metavar="TEXT",
+        help="remove TEXT from observation names before anything else. Repeatable. "
+        "Use it when a pipeline's suffix is not recognised automatically, e.g. "
+        "--strip _significant_p0.05_rna. Ignored if it would empty a name or make "
+        "two names identical",
     )
     parser.add_argument(
         "--recursive",
