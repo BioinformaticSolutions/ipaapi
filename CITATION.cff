@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the archived release below."
+title: "ipaapi: a command-line client for QIAGEN Ingenuity Pathway Analysis"
+type: software
+authors:
+  - family-names: Jones
+    given-names: Kenneth L.
+    affiliation: "Bioinformatic Solutions, LLC"
+    orcid: "https://orcid.org/0009-0000-1289-4652"
+license: MIT
+repository-code: "https://github.com/BioinformaticSolutions/ipaapi"
+url: "https://www.bioinformaticsolutions.com/ipaapi.html"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21940020
+    description: "Archived releases, all versions"
+  - type: doi
+    value: 10.5281/zenodo.21940021
+    description: "Version 1.0.0"
+keywords:
+  - Ingenuity Pathway Analysis
+  - pathway analysis
+  - bioinformatics
+  - command-line tool
+
+# No `version:` or `date-released:` on purpose. Both are per-release facts and
+# would need editing on every tag; Zenodo takes the version from the git tag,
+# and GitHub's citation widget does not require them.
