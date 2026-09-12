@@ -28,7 +28,7 @@ from .errors import (
 )
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import GENE_ID_TYPES, MeasurementType, ReferenceSet
-from .triage import TRIAGE_DIRNAMES, Triage
+from .triage import FAILED_DIRNAME, TRIAGE_DIRNAMES, Triage
 
 __all__ = ["main"]
 
@@ -111,7 +111,22 @@ examples:
 class _Formatter(
     argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter
 ):
-    """Show defaults, but leave the epilog's line breaks alone."""
+    """Show defaults, but leave the epilog's line breaks alone.
+
+    ArgumentDefaultsHelpFormatter appends "(default: None)" to every optional
+    argument, including the several whose help text already states a different
+    and truthful default -- ``--pattern`` really defaults to the table
+    extensions, ``--observation`` to the filename, ``--log-file`` to a path
+    under ~/.local/state. Printing both left the help contradicting itself, so
+    a help string that already says "default" suppresses the automatic one.
+    """
+
+    def _get_help_string(self, action):
+        if action.help and "default" in action.help.lower():
+            return action.help
+        if action.default is None or action.default is False:
+            return action.help
+        return super()._get_help_string(action)
 
 
 def version_banner() -> str:
@@ -377,7 +392,12 @@ def discover_files(
         candidate
         for candidate in candidates
         if candidate.is_file()
-        and not candidate.name.startswith(".")
+        # Any dot-component, not just the filename: --recursive otherwise
+        # submitted .ipynb_checkpoints/x-checkpoint.txt -- a stale copy of a
+        # real file -- as an extra analysis, and then filed it into submitted/.
+        and not any(
+            part.startswith(".") for part in candidate.relative_to(root).parts
+        )
         # Files already filed into submitted/ or failed/ are not input, or a
         # second run would resubmit work that succeeded the first time.
         and not (TRIAGE_DIRNAMES & set(candidate.relative_to(root).parts[:-1]))
@@ -518,7 +538,17 @@ DISPOSABLE_TOKENS = frozenset(
 )
 
 #: A trailing cutoff such as ``p0.05``, ``fdr0.01`` or ``0.05``.
-_CUTOFF_TOKEN = re.compile(r"^(p|q|padj|fdr|adj|log2fc|fc|lfc)?[0-9]*\.?[0-9]+$", re.IGNORECASE)
+#: A statistical cutoff written into a filename: p0.05, q0.01, fdr0.1, 1.5.
+#:
+#: The decimal point used to be optional, which made this match p53, q30, fc2
+#: and any bare integer -- so a dose of 10 versus 100, or a _p53 subset, was
+#: dropped from the observation name as "disposable". A cutoff is a fraction;
+#: requiring the point costs nothing real and stops the pattern eating the
+#: experimental variable. A bare integer with no prefix is never a cutoff.
+_CUTOFF_TOKEN = re.compile(
+    r"^(?:(?:p|q|padj|fdr|adj|log2fc|fc|lfc)\s*[0-9]*\.[0-9]+|[0-9]*\.[0-9]+)$",
+    re.IGNORECASE,
+)
 
 
 def _is_disposable(token: str) -> bool:
@@ -690,9 +720,17 @@ def trim_name(name: str, limit: int = MAX_OBSERVATION_NAME, marker: str = "..") 
         tail = token + tail
     tail = tail.strip(_NAME_SEPARATORS)
 
-    if not head and not tail:  # a single token longer than the limit; cut it
+    # A long unbroken token followed by a short one leaves an empty head and a
+    # two-character tail, so the name came out as "..rep" or "..v2". A hard cut
+    # of the original carries far more meaning than that, so anything that
+    # would end up shorter than MIN_STRIPPED_NAME falls back to it. Common for
+    # GEO-derived, camelCase filenames with a version or replicate suffix.
+    candidate = (
+        f"{head}{marker}{tail}" if tail else f"{head}{marker}" if head else ""
+    )
+    if len(candidate.strip(_NAME_SEPARATORS + marker)) < MIN_STRIPPED_NAME:
         return name[:limit]
-    return f"{head}{marker}{tail}" if tail else f"{head}{marker}"
+    return candidate
 
 
 def observation_names(
@@ -764,7 +802,39 @@ def observation_names(
     if all(len(name) <= limit for name in names):
         return names
 
-    return [trim_name(name, limit) for name in names]
+    # trim_name keeps both ends and drops the middle, so names differing only
+    # in the middle collapse onto each other. Every earlier step is guarded by
+    # _usable, whose job is exactly this; the last one was not. Two analyses
+    # with the same obs1name is what breaks a comparison analysis, which is the
+    # reason the guard exists at all.
+    trimmed = [trim_name(name, limit) for name in names]
+    if len(set(trimmed)) == len(set(names)):
+        return trimmed
+    return _disambiguate(trimmed, names, limit)
+
+
+def _disambiguate(
+    trimmed: Sequence[str], originals: Sequence[str], limit: int
+) -> List[str]:
+    """Re-separate names that the final trim collapsed onto each other.
+
+    A numeric suffix is a poor label, so it is used only where it is needed:
+    names that survived the trim distinctly are left exactly as they are.
+    """
+    counts: dict = {}
+    for name in trimmed:
+        counts[name] = counts.get(name, 0) + 1
+
+    seen: dict = {}
+    out: List[str] = []
+    for name in trimmed:
+        if counts[name] == 1:
+            out.append(name)
+            continue
+        seen[name] = seen.get(name, 0) + 1
+        tag = f"_{seen[name]}"
+        out.append(trim_name(name, limit - len(tag)) + tag)
+    return out
 
 
 def _report_shortened_names(requested: Sequence[str], resolved: Sequence[str]) -> None:
@@ -1104,6 +1174,12 @@ def cmd_submit(args) -> int:
         if not systemic:
             triage.mark_failed(path, f"Validation failed.\n\n{reason}")
 
+    # A file quarantined into failed/ is a failure of the run, and the exit
+    # code is what a cron entry or a Snakemake rule actually reads. Without
+    # this, submit exited 0 with files sitting in failed/ -- and --dry-run
+    # exited 0 where `validate` on the same directory exited 1.
+    quarantined = [path.name for path, _ in problems] if not systemic else []
+
     if systemic:
         print(
             f"\nAll {len(problems)} file(s) failed validation the same way, so this "
@@ -1129,11 +1205,12 @@ def cmd_submit(args) -> int:
         print(f"\nDry run: {len(datasets)} {noun} valid; stopping before login.")
         if triage is not None and triage.summary():
             print(triage.summary())
-        return 0
+        return 1 if quarantined else 0
 
     client = _client(args)
 
     analysis_ids: List[str] = []
+    log_path: Optional[str] = None
     failures: List[str] = []
     records: List[history.SubmissionRecord] = []
     skipped: List[str] = []
@@ -1209,9 +1286,15 @@ def cmd_submit(args) -> int:
         analysis_ids.extend(submitted)
         print(f"submitted {dataset.name}: {', '.join(submitted)}")
 
-        # One record per analysis, so an ID is never only in the scrollback.
+        # One record per analysis, written BEFORE the file is filed away and
+        # before the next submission is attempted. Batching this until after
+        # the loop meant a Ctrl-C on file two left file one sitting in
+        # submitted/ -- so a re-run would not resubmit it -- with its analysis
+        # ID written nowhere but the scrollback. That is precisely the loss
+        # this log exists to prevent, and history.py's own docstring promises a
+        # line at a time.
         observations = [obs.name for obs in dataset.mapping.observations]
-        records.extend(
+        just_now = [
             history.SubmissionRecord(
                 analysis_id=analysis_id,
                 project=args.project,
@@ -1222,11 +1305,11 @@ def cmd_submit(args) -> int:
                 host=client.host,
             )
             for i, analysis_id in enumerate(submitted)
-        )
+        ]
+        records.extend(just_now)
+        log_path = history.append(just_now, path=args.log_file) or log_path
         if triage is not None and source is not None:
             triage.mark_submitted(source)
-
-    log_path = history.append(records, path=args.log_file)
 
     if triage is not None and triage.summary():
         print("\n" + triage.summary())
@@ -1260,8 +1343,17 @@ def cmd_submit(args) -> int:
             "skipped rather than resubmitted."
         )
 
+    if quarantined:
+        noun = "file" if len(quarantined) == 1 else "files"
+        print(
+            f"\n{len(quarantined)} {noun} failed validation and "
+            f"{'was' if len(quarantined) == 1 else 'were'} moved to "
+            f"{FAILED_DIRNAME}/: " + ", ".join(quarantined),
+            file=sys.stderr,
+        )
+
     if not analysis_ids:
-        if skipped and not failures and not quota_reached:
+        if skipped and not failures and not quota_reached and not quarantined:
             print(
                 f"\nNothing new to submit -- all {len(skipped)} file(s) are already "
                 f"in {args.project!r}."
@@ -1273,7 +1365,10 @@ def cmd_submit(args) -> int:
     noun = "analysis" if len(analysis_ids) == 1 else "analyses"
     print(f"\nSubmitted {len(analysis_ids)} {noun}.")
     if failures:
-        print(f"{len(failures)} of {len(datasets)} file(s) failed to submit.", file=sys.stderr)
+        # Denominator counts every file the run looked at, not just the ones
+        # that became datasets -- the others failed earlier, not less.
+        looked_at = len(datasets) + len(quarantined)
+        print(f"{len(failures)} of {looked_at} file(s) failed to submit.", file=sys.stderr)
 
     if not args.wait:
         joined = " ".join(analysis_ids)
@@ -1285,10 +1380,10 @@ def cmd_submit(args) -> int:
         )
         if log_path:
             print(f"Recorded in {log_path} -- see 'ipaapi history'.")
-        return 1 if (failures or quota_reached) else 0
+        return 1 if (failures or quota_reached or quarantined) else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
-    exit_code = 1 if (failures or quota_reached) else 0
+    exit_code = 1 if (failures or quota_reached or quarantined) else 0
     for analysis_id, status in statuses.items():
         print(f"{analysis_id}: {status.name.lower()}")
         if status.succeeded:
@@ -1306,7 +1401,15 @@ def cmd_status(args) -> int:
     client = _client(args)
     exit_code = 0
     for analysis_id in args.analysis_ids:
-        status = client.status(analysis_id)
+        # One unknown or stale ID used to unwind the whole command, so every ID
+        # after it went unchecked -- including in the `ipaapi status <every
+        # id>` line that submit itself prints.
+        try:
+            status = client.status(analysis_id)
+        except IPAError as exc:
+            print(f"{analysis_id}: {exc}", file=sys.stderr)
+            exit_code = 1
+            continue
         print(f"{analysis_id}: {status.name.lower()}")
         if not status.succeeded:
             exit_code = 1
@@ -1320,7 +1423,12 @@ def cmd_report(args) -> int:
     for analysis_id in args.analysis_ids:
         # An unfinished analysis has no Interpret link yet and the endpoint
         # answers with a bare HTTP 500, so say what is actually going on.
-        status = client.status(analysis_id)
+        try:
+            status = client.status(analysis_id)
+        except IPAError as exc:
+            print(f"{analysis_id}: {exc}", file=sys.stderr)
+            exit_code = 1
+            continue
         if not status.is_terminal:
             print(f"{analysis_id}: still running -- the link exists once it finishes")
             exit_code = 1
@@ -1351,8 +1459,12 @@ def cmd_history(args) -> int:
         rows = [r for r in rows if r.get("project") == args.project]
     if args.since:
         rows = [r for r in rows if r.get("timestamp", "") >= args.since]
-    if args.limit:
-        rows = rows[-args.limit :]
+    if args.limit is not None:
+        if args.limit < 0:
+            raise IPAError("--limit cannot be negative.")
+        # `if args.limit:` treated 0 as "no limit", and a negative value sliced
+        # from the front of the log rather than the end.
+        rows = rows[-args.limit :] if args.limit else []
 
     if not rows:
         print(
