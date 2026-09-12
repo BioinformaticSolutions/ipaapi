@@ -53,8 +53,20 @@ It also fixes a number of things the demo got wrong or left out — see
 ## Installation
 
 ```bash
+python3 -m pip install ipaapi
+```
+
+`python3 -m pip` rather than `pip` or `pip3`: a bare `pip` does not exist on
+macOS or on most Linux distributions, and `pip3` installs into whichever Python
+happens to come first on `PATH` — which need not be the one that will run
+`ipaapi`. Naming the interpreter installs into that interpreter, by
+construction.
+
+For development, an editable checkout:
+
+```bash
 git clone <this-repo> ipaapi && cd ipaapi
-pip install -e .
+python3 -m pip install -e .
 ```
 
 Or build and install a wheel:
@@ -71,7 +83,7 @@ and whether it's an editable checkout rather than a built wheel:
 
 ```bash
 $ ipaapi --version
-ipaapi 1.0.0
+ipaapi 1.3.0
 installed at /usr/lib/python3.11/site-packages/ipaapi
 python 3.11.5 (/usr/bin/python3)
 ```
@@ -914,7 +926,7 @@ examples/        runnable scripts and diagnostics
 ```
 
 ```bash
-pip install -e ".[dev]"
+python3 -m pip install -e ".[dev]"
 pytest
 ```
 
@@ -950,7 +962,7 @@ already had to be corrected more than once. If IPA behaves differently for you,
 that is worth reporting even without a code change.
 
 ```bash
-pip install -e ".[dev]"
+python3 -m pip install -e ".[dev]"
 pytest
 ```
 
