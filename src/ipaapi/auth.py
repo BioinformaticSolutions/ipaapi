@@ -27,6 +27,7 @@ This is the same flow the original demo used, with the sharp edges removed:
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import hashlib
 import json
@@ -34,6 +35,9 @@ import os
 import re
 import secrets
 import stat
+import socketserver
+import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -158,6 +162,29 @@ def _default_cache_path() -> str:
     return os.path.join(base, "ipaapi", "token.json")
 
 
+@contextlib.contextmanager
+def _exclusive_lock(path: str):
+    """Hold an exclusive lock beside *path* for the duration of the block.
+
+    Best effort: where ``fcntl`` does not exist the block still runs, which is
+    no worse than the unlocked behaviour it replaces.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - not POSIX
+        yield
+        return
+    fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 @dataclass
 class TokenCache:
     """Stores tokens on disk between runs, keyed by client and application.
@@ -198,9 +225,13 @@ class TokenCache:
             return None
         try:
             creds = Credentials.from_dict(entry)
-        except (TypeError, AuthenticationError):
+            expired = creds.is_expired
+        except (TypeError, ValueError, AuthenticationError):
+            # is_expired was evaluated outside the guard, so a hand-edited
+            # expires_at holding a string or a list raised TypeError instead of
+            # reading as a miss -- which is what this class promises.
             return None
-        if creds.is_expired and not allow_expired:
+        if expired and not allow_expired:
             return None
         return creds
 
@@ -210,20 +241,18 @@ class TokenCache:
         A cache failure is reported but not fatal -- losing the cache costs an
         extra login, not the run. It is not swallowed silently, because a cache
         that never writes looks exactly like a token that expires instantly.
+
+        The whole read-modify-write is taken under an exclusive lock. Without
+        one, six concurrent logins left three entries: every process had read
+        the file before any had written it, and each then wrote back its own
+        view. Parallel batches are the workflow this package is for.
         """
-        data = self._load_all()
-        data[self._key(client_id, credentials.application_name, credentials.host)] = (
-            credentials.to_dict()
-        )
         try:
             directory = os.path.dirname(self.path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
-            tmp = f"{self.path}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(data, fh)
-            os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-            os.replace(tmp, self.path)
+            with _exclusive_lock(self.path):
+                self._put_locked(client_id, credentials, directory)
         except OSError as exc:
             print(
                 f"Warning: could not write the token cache at {self.path!r} ({exc}).\n"
@@ -233,6 +262,43 @@ class TokenCache:
                 f"--token-file PATH, or once with:\n"
                 f"    export {TOKEN_FILE_ENV}=$HOME/ipaapi-token.json"
             )
+
+    def _put_locked(self, client_id: str, credentials: Credentials, directory: str) -> None:
+        """Re-read, merge and write. Caller holds the lock."""
+        data = self._load_all()
+        data[self._key(client_id, credentials.application_name, credentials.host)] = (
+            credentials.to_dict()
+        )
+        if True:
+            # A unique temp file, created owner-only, in the same directory.
+            #
+            # A fixed "<path>.tmp" was shared by every process, so two runs
+            # logging in at once raced: one os.replace found the file already
+            # renamed away, the entry was lost, and the handler below told the
+            # user their cache location was unwritable -- which is the wrong
+            # fix for a race. With three workers over a 40-entry cache the file
+            # went from 37,780 bytes to 2,823.
+            #
+            # And the mode mattered: open(tmp, "w") creates at 0644 under a
+            # normal umask, so the access and refresh tokens sat world-readable
+            # until the chmod landed. mkstemp creates at 0600 to begin with,
+            # which is the difference between a window and no window on a
+            # shared analysis server.
+            fd, tmp = tempfile.mkstemp(
+                prefix=os.path.basename(self.path) + ".", suffix=".tmp",
+                dir=directory or ".",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh)
+                os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
 
     def clear(self) -> None:
         """Remove the cache file if present."""
@@ -247,22 +313,34 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
     server_version = "ipaapi"
 
+    #: Applied to the connection socket, so a client that connects and then
+    #: says nothing cannot occupy a worker indefinitely.
+    timeout = 30
+
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         params = parse_qs(urlparse(self.path).query)
         result = self.server.result  # type: ignore[attr-defined]
 
         if "code" in params or "error" in params:
             ok = "code" in params
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(_SUCCESS_PAGE if ok else _FAILURE_PAGE)
+            # Recorded BEFORE the response is written. If writing the page
+            # raises -- the tab closed the instant after authorizing --
+            # socketserver swallows it, and doing this afterwards discarded a
+            # code that had already arrived, leaving login to wait out its full
+            # timeout and report that nothing reached the redirect URI.
             result.update(
                 code=params.get("code", [None])[0],
                 state=params.get("state", [None])[0],
                 error=params.get("error", [None])[0],
                 error_description=params.get("error_description", [None])[0],
             )
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(_SUCCESS_PAGE if ok else _FAILURE_PAGE)
+            except OSError:
+                pass  # the browser hung up; we already have what we need
             self.server.done.set()  # type: ignore[attr-defined]
         else:
             self.send_response(404)
@@ -273,8 +351,24 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         return
 
 
-class _CallbackServer(HTTPServer):
+class _CallbackServer(socketserver.ThreadingMixIn, HTTPServer):
+    """Callback server for the OAuth redirect.
+
+    Threading, and a per-connection timeout, are both load-bearing. As a plain
+    single-threaded HTTPServer with no handler timeout, one connection that
+    never completed a request line blocked the accept loop in
+    ``rfile.readline()`` forever. Two things then went wrong at once: the real
+    redirect was never processed, so an authorization that had actually
+    succeeded timed out; and ``server.shutdown()`` in login's ``finally``
+    waits for ``serve_forever`` to return, so it never returned either -- the
+    AuthenticationError the timeout raised was never delivered and the process
+    sat silent with no output at all. A browser speculatively preconnecting to
+    localhost:8000, or a security agent probing loopback, is enough to trigger
+    it.
+    """
+
     allow_reuse_address = True
+    daemon_threads = True
 
     def __init__(self, address):
         super().__init__(address, _CallbackHandler)
@@ -395,7 +489,8 @@ def refresh(
         from requests_oauthlib import OAuth2Session
     except ImportError as exc:  # pragma: no cover - dependency is declared
         raise AuthenticationError(
-            "requests-oauthlib is required to refresh a token."
+            "requests-oauthlib is required to refresh a token. Install it with "
+            f"`{sys.executable or 'python3'} -m pip install requests-oauthlib`."
         ) from exc
 
     oauth = OAuth2Session(client_id)
@@ -576,7 +671,7 @@ def login(
     except ImportError as exc:  # pragma: no cover - dependency is declared
         raise AuthenticationError(
             "requests-oauthlib is required for browser login. Install it with "
-            "`pip install requests-oauthlib`."
+            f"`{sys.executable or 'python3'} -m pip install requests-oauthlib`."
         ) from exc
 
     parsed = urlparse(redirect_uri)

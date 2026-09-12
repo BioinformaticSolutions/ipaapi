@@ -20,6 +20,7 @@ from typing import List, Optional, Sequence, Tuple
 from . import __version__, history
 from .dataset import Dataset, load_table
 from .errors import (
+    GatewayTimeoutError,
     AnalysisRefusedError,
     IPAError,
     MalformedRequestError,
@@ -1217,6 +1218,7 @@ def cmd_submit(args) -> int:
     quota_reached = False
     malformed = False
     service_down = False
+    timed_out = False
 
     for position, dataset in enumerate(datasets):
         source = pathlib.Path(dataset.source_path) if dataset.source_path else None
@@ -1262,9 +1264,14 @@ def cmd_submit(args) -> int:
             # The file is fine; IPA will not run it right now. Leave this one
             # and everything after it for the next run.
             quota_reached = True
-            service_down = isinstance(exc, ServiceUnavailableError)
+            timed_out = isinstance(exc, GatewayTimeoutError)
+            service_down = (
+                isinstance(exc, ServiceUnavailableError) and not timed_out
+            )
             if isinstance(exc, QuotaExceededError):
                 label = "Allowance exhausted"
+            elif timed_out:
+                label = "IPA did not answer in time"
             elif isinstance(exc, ServiceUnavailableError):
                 label = "IPA is unavailable"
             else:
@@ -1320,6 +1327,21 @@ def cmd_submit(args) -> int:
         )
         if service_down:
             print("Nothing about your command needs changing.")
+        if timed_out:
+            # GatewayTimeoutError is a ServiceUnavailableError, so it used to
+            # collect the flat "nothing needs changing" reassurance. A timeout
+            # is not an outage: it loses the ANSWER, not necessarily the
+            # REQUEST, and there is no analysis ID to log, so the duplicate
+            # guard cannot see a dataset the timed-out attempt may have
+            # created. Say so rather than imply the re-run is clean.
+            print(
+                f"Note: {datasets[position].name} timed out, which loses IPA's "
+                "answer but not necessarily the request. If IPA did create the "
+                "dataset, no analysis ID came back, so it is not in the log and "
+                "the duplicate guard cannot see it -- the re-run may be "
+                "rejected as a duplicate name. That rejection means the "
+                "analysis exists; check IPA before using --force on it."
+            )
     if malformed:
         # Only claim nothing moved when nothing did -- earlier files in the
         # batch may well have been submitted and filed before this one failed.

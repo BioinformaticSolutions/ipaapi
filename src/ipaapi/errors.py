@@ -16,6 +16,7 @@ __all__ = [
     "MalformedRequestError",
     "AnalysisRefusedError",
     "ServiceUnavailableError",
+    "GatewayTimeoutError",
     "AnalysisError",
     "ResultsUnavailableError",
 ]

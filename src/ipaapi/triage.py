@@ -59,17 +59,30 @@ class Triage:
     # -- outcomes ----------------------------------------------------------
 
     def mark_submitted(self, path: pathlib.Path) -> Optional[pathlib.Path]:
-        """Move *path* into ``submitted/``."""
-        self.submitted.append(pathlib.Path(path))
-        return self._move(path, self.submitted_dir)
+        """Move *path* into ``submitted/``.
+
+        Recorded only if the move actually happened. Appending first meant
+        ``summary()`` reported files as moved directly beneath the warnings
+        saying they had been left in place -- and the summary is the run's
+        statement of what still needs doing.
+        """
+        destination = self._move(path, self.submitted_dir)
+        if destination is not None:
+            self.submitted.append(pathlib.Path(path))
+        else:
+            self.left.append(pathlib.Path(path))
+        return destination
 
     def mark_failed(
         self, path: pathlib.Path, reason: str
     ) -> Optional[pathlib.Path]:
         """Move *path* into ``failed/`` and write a note explaining *reason*."""
-        self.failed.append(pathlib.Path(path))
         destination = self._move(path, self.failed_dir)
-        if destination is not None and not self.dry_run:
+        if destination is None:
+            self.left.append(pathlib.Path(path))
+            return None
+        self.failed.append(pathlib.Path(path))
+        if not self.dry_run:
             self._write_note(destination, reason)
         return destination
 
@@ -101,7 +114,10 @@ class Triage:
 
     @staticmethod
     def _write_note(moved_to: pathlib.Path, reason: str) -> None:
-        note = moved_to.with_suffix(moved_to.suffix + ".error.txt")
+        # _unique, like the move itself: TABLE_PATTERNS matches *.error.txt, so
+        # a note dragged back out of failed/ can be re-ingested as input on a
+        # later run, quarantined, and then have its own note written over it.
+        note = _unique(moved_to.with_suffix(moved_to.suffix + ".error.txt"))
         try:
             note.write_text(reason.rstrip() + "\n", encoding="utf-8")
         except OSError:

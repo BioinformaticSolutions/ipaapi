@@ -20,7 +20,7 @@ from __future__ import annotations
 import csv
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Sequence
 
 __all__ = [
@@ -94,7 +94,17 @@ class SubmissionRecord:
 
 
 def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    """UTC, ISO 8601, to the second.
+
+    Local offsets were written here, and the log is compared and sorted
+    lexicographically -- by ``read``'s "oldest first" claim and by ``--since``.
+    Two rows forty minutes apart across the autumn clock change sorted in the
+    wrong order, and ``--since`` returned exactly the row it should have
+    excluded. The same inversion is permanent, not annual, whenever two
+    machines in different zones share one log, which IPAAPI_LOG_FILE on an
+    exported filesystem invites. UTC sorts correctly everywhere.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def append(
@@ -133,13 +143,36 @@ def append(
 
 
 def read(path: Optional[str] = None) -> List[dict]:
-    """Read the log back, oldest first. A missing log reads as empty."""
+    """Read the log back, oldest first. A missing or damaged log reads as empty.
+
+    Two failures used to escape as tracebacks, and neither stayed local to
+    ``ipaapi history``: ``_already_submitted`` calls this for every dataset on
+    the normal submit path, so an unreadable log blocked submission outright --
+    the opposite of the best-effort contract ``append`` documents.
+
+    A byte that is not UTF-8 raised ``UnicodeDecodeError``, which is a
+    ``ValueError`` and so slipped past the ``OSError`` guard. Excel's
+    tab-delimited export on Windows writes cp1252, and this module advertises
+    the file as spreadsheet-readable. Undecodable bytes are now replaced.
+
+    A truncated final row -- what an interrupted write or a full disk leaves --
+    gave ``DictReader`` missing keys filled with ``None``, and ``.get(k, "")``
+    returns that ``None`` because the key exists, so the caller's formatting
+    raised ``TypeError``. ``restval`` now fills with the empty string.
+    """
     path = path or default_log_path()
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", newline="", encoding="utf-8") as fh:
-            return [dict(row) for row in csv.DictReader(fh, delimiter="\t")]
-    except OSError as exc:
-        print(f"Warning: could not read the submission log at {path!r} ({exc}).")
+        with open(path, "r", newline="", encoding="utf-8", errors="replace") as fh:
+            return [
+                {k: ("" if v is None else v) for k, v in row.items() if k is not None}
+                for row in csv.DictReader(fh, delimiter="\t", restval="")
+            ]
+    except (OSError, ValueError, csv.Error) as exc:
+        print(
+            f"Warning: could not read the submission log at {path!r} ({exc}).\n"
+            "  Treating it as empty. Submissions will still run, but the "
+            "duplicate-name guard cannot see earlier runs."
+        )
         return []
