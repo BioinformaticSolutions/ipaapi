@@ -372,10 +372,19 @@ def test_a_file_limit_wrapped_in_ipas_own_prefix_is_not_quota(message):
 
 
 @pytest.mark.parametrize("body,expected", [
-    ("<html><body><h1>504</h1></body></html>", True),
+    # Prefixed, or followed by the gateway wording: a timeout.
     ("Received HTTP 504 from the upstream server", True),
-    ("The gateway returned 504.", True),
+    ("504 Gateway Time-out The server didn't respond in time.", True),
+    ("<html><body><h1>502 Bad Gateway</h1></body></html>", True),
+    ("Error 504", True),
+    # A bare number is a quantity until something says otherwise. These are all
+    # per-file refusals; calling any of them a timeout halts the batch and
+    # tells the user their data is fine.
     ("Unable to run analysis: 504 identifiers could not be mapped.", False),
+    ("<p>identifiers that could not be mapped: 504.</p>", False),
+    ("<p>Maximum number of rows (504) exceeded</p>", False),
+    ("<p>Exceeded the maximum number of observations, 504</p>", False),
+    ("Rows discarded: 502, kept: 4498", False),
 ])
 def test_timeout_detection_across_real_shapes(body, expected):
     assert looks_like_gateway_timeout(200, body) is expected
@@ -523,7 +532,10 @@ def test_forgetting_the_cache_removes_its_lock():
     assert not os.path.exists(path + ".lock")
 
 
-def test_retries_reach_a_caller_supplied_session():
+def test_a_supplied_session_is_used_exactly_as_given():
+    """Not replaced, and not mutated either. Two earlier attempts did one or
+    the other; a session shared with the caller's own traffic must not silently
+    gain retries and backoff."""
     import requests
     from requests.adapters import HTTPAdapter
     from ipaapi.client import IPAClient
@@ -531,6 +543,109 @@ def test_retries_reach_a_caller_supplied_session():
     session = requests.Session()
     mine = HTTPAdapter(pool_maxsize=99)
     session.mount("https://", mine)
+    before = mine.max_retries
     IPAClient(Credentials("t"), session=session, retries=3)
-    assert session.get_adapter("https://x") is mine          # not replaced
-    assert mine.max_retries.total == 3                       # but retries work
+    assert session.get_adapter("https://x") is mine
+    assert mine.max_retries is before
+
+
+def test_retries_are_configured_on_a_session_we_create():
+    from ipaapi.client import IPAClient
+
+    client = IPAClient(Credentials("t"), retries=3)
+    assert client.session.get_adapter("https://x").max_retries.total == 3
+
+
+# -- third audit round -------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [
+    "<p>identifiers that could not be mapped: 504.</p>",
+    "<p>Maximum number of rows (504) exceeded</p>",
+    "<p>Exceeded the maximum number of observations, 504</p>",
+    "Rows discarded: 502, kept: 4498",
+])
+def test_a_count_before_punctuation_is_not_a_timeout(body):
+    """IPA delivers every error as HTML, so allowing a code before '.', ')' or
+    '<' reopened the hole entirely."""
+    assert not looks_like_gateway_timeout(200, body)
+
+
+def test_a_statement_of_allowance_left_is_not_exhaustion():
+    assert not looks_like_quota(
+        200, "You have 12 analyses remaining in your allowance this month."
+    )
+
+
+def test_allowance_exhausted_still_reads_as_quota():
+    assert looks_like_quota(200, "Your allowance has been exhausted.")
+
+
+def test_a_multi_word_hash_header_is_read():
+    """#Gene ID,log2 FC,p value is an ordinary export. Requiring single-token
+    field names rejected it, and the advice then destroyed a data row."""
+    path = write("#Gene ID,log2 FC,p value\nENSG1,2.0,0.01\nENSG2,-3.0,0.02\n")
+    assert list(load_table(path).columns) == ["Gene ID", "log2 FC", "p value"]
+
+
+def test_strip_does_not_shorten_names_that_already_fit():
+    """--strip is a rename, not a licence to run the whole pipeline."""
+    names = ["Kidney_KO_vs_WT_results", "Liver_KO_vs_WT_results"]
+    assert cli.observation_names(names, strip="_nomatch") == names
+
+
+def test_one_bad_byte_does_not_mojibake_the_whole_log():
+    """A log truncated mid-character must not re-read every good row as cp1252
+    -- the duplicate guard matches dataset names exactly."""
+    path = os.path.join(tempfile.mkdtemp(), "log.tsv")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\t".join(history.FIELDS) + "\n")
+        fh.write("2026-09-12T22:00:00+00:00\t1\tP\tMüller_DEG\t\t\t\t\n")
+    with open(path, "ab") as fh:
+        fh.write(b"2026-09-12T22:01:00+00:00\t2\tP\tSch\xc3\n")
+    assert history.read(path)[0]["dataset_name"] == "Müller_DEG"
+    assert cli._already_submitted("P", "Müller_DEG", path) is not None
+
+
+def test_a_matching_state_beats_an_earlier_stale_redirect():
+    """A restored tab replaying an old authorization usually arrives FIRST, so
+    pure first-wins locked in the stale code and the real one could not correct
+    it."""
+    import threading
+    from ipaapi.auth import _CallbackHandler
+
+    class FakeServer:
+        def __init__(self):
+            self.result = {}
+            self.expected_state = "NEW"
+            self.done = threading.Event()
+
+    server = FakeServer()
+
+    def hit(query):
+        handler = _CallbackHandler.__new__(_CallbackHandler)
+        handler.server = server
+        handler.path = query
+        handler.send_response = lambda *a, **k: None
+        handler.send_header = lambda *a, **k: None
+        handler.end_headers = lambda: None
+        handler.wfile = type("W", (), {"write": lambda self, b: None})()
+        handler.do_GET()
+
+    hit("/?code=STALE&state=OLD")
+    hit("/?code=REAL&state=NEW")
+    assert server.result["code"] == "REAL"
+
+    # And once the right one has landed, nothing displaces it.
+    hit("/?error=access_denied&state=OLD")
+    assert server.result["code"] == "REAL"
+
+
+@pytest.mark.parametrize("name", [
+    "QuotaExceededError", "MalformedRequestError", "AnalysisRefusedError",
+    "ServiceUnavailableError", "GatewayTimeoutError",
+])
+def test_the_documented_error_classes_import_from_the_package(name):
+    import ipaapi
+    assert hasattr(ipaapi, name)
+    assert name in ipaapi.__all__

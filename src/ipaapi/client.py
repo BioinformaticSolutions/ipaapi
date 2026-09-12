@@ -103,9 +103,11 @@ class IPAClient:
             dataset in the body, so the default is generous.
         retries: Retry count for idempotent GET requests. Submissions are never
             retried automatically, since a retried POST could create a duplicate
-            analysis.
+            analysis. Applies only when this client creates the session: a
+            session you supply is left exactly as you configured it.
         session: Optional pre-configured :class:`requests.Session`, e.g. one
-            carrying proxy settings.
+            carrying proxy settings. It is used as given and never modified,
+            so set its own retry policy if you want one.
 
     Example:
         >>> client = IPAClient.login()                     # doctest: +SKIP
@@ -126,24 +128,19 @@ class IPAClient:
         # caller's session discards the adapters they mounted -- pool sizing,
         # client certificates, their own retry policy -- which is the opposite
         # of what the `session` argument is advertised for.
+        # A session you pass in is yours, and is left exactly as you configured
+        # it -- including its retry behaviour. Two earlier attempts here were
+        # both wrong: mounting over your adapter discarded your pool sizing and
+        # client certificates, and setting `max_retries` on your adapter
+        # mutated an object this class does not own, so a session shared with
+        # your non-IPA traffic silently gained retries and backoff. `retries`
+        # therefore applies only to the session this client creates; configure
+        # your own as you want it.
         self.session = session if session is not None else requests.Session()
-        if retries:
-            # Set the retry policy ON the mounted adapter rather than mounting
-            # a replacement. Replacing discards whatever the caller configured
-            # -- pool sizing, client certificates -- which is the opposite of
-            # what the `session` argument is for; skipping it entirely instead
-            # silently turned retries off for every caller who passed one. An
-            # adapter that already carries a retry policy is left alone, since
-            # that is a deliberate choice by whoever made it.
-            policy = self._retry_policy(retries)
-            for scheme in ("https://", "http://"):
-                try:
-                    adapter = self.session.get_adapter(scheme)
-                except requests.exceptions.InvalidSchema:  # pragma: no cover
-                    self.session.mount(scheme, HTTPAdapter(max_retries=policy))
-                    continue
-                if getattr(getattr(adapter, "max_retries", None), "total", 0) in (0, None):
-                    adapter.max_retries = policy
+        if retries and session is None:
+            adapter = HTTPAdapter(max_retries=self._retry_policy(retries))
+            self.session.mount("https://", adapter)
+            self.session.mount("http://", adapter)
 
     @staticmethod
     def _retry_policy(retries: int):
@@ -539,7 +536,6 @@ QUOTA_PATTERNS = (
     "usage limit",
     "too many analyses",
     "no analyses remaining",
-    "analyses remaining",
     "out of analyses",
     "insufficient credits",
 )
@@ -552,7 +548,19 @@ QUOTA_PATTERNS = (
 #: it halts the batch, leaves the file in place instead of quarantining it, and
 #: the next run repeats it forever under the wrong diagnosis. They now count
 #: only next to a word that names the allowance as the thing exhausted.
-_LIMIT_WORDS = ("exceeded", "limit reached", "limit exceeded", "quota", "allowance")
+#: Words that assert a limit has been REACHED. "quota" and "allowance" were
+#: here as well as in the subjects below, so each satisfied both halves of the
+#: gate on its own and "You have 12 analyses remaining in your allowance this
+#: month" -- a statement of what is left -- classified as exhausted.
+_LIMIT_WORDS = (
+    "exceeded",
+    "limit reached",
+    "limit exceeded",
+    "exhausted",
+    "used up",
+    "depleted",
+    "run out",
+)
 
 #: Words that name the allowance itself.
 #:
@@ -697,13 +705,22 @@ _OUTAGE = re.compile(
 #: status-code check below never sees it. Observed wording: "504 Gateway
 #: Time-out The server didn't respond in time."
 #:
-#: The numeric alternative is anchored to the shapes a status code actually
-#: appears in -- "504 Gateway Time-out", "HTTP 502", "Error 504" -- rather than
-#: matching a bare 502 or 504 anywhere in the body. Unanchored it matched
-#: "Unable to run analysis: 504 identifiers could not be mapped", and since the
-#: timeout branch is tested before the refusal branch, a considered refusal was
-#: reported as a timeout, with the message that the command and the data were
-#: almost certainly fine.
+#: A number counts only where it cannot be a quantity: prefixed as "HTTP 504",
+#: "Error 502", "status 504", or immediately followed by the gateway wording as
+#: in "504 Gateway Time-out".
+#:
+#: A bare code with punctuation after it is NOT enough, which was tried and had
+#: to be withdrawn. Allowing a following ".", ",", ")" or "<" reopened the hole
+#: it was meant to close, because IPA delivers every error inside HTML: "rows
+#: (504) exceeded" and "identifiers that could not be mapped: 504.</p>" both
+#: matched again. Since the timeout branch is tested before the refusal branch,
+#: a permanent per-file refusal was reported as a timeout -- batch halted,
+#: files left in place, "your command and your data are almost certainly fine",
+#: and the same failure on every re-run.
+#:
+#: The cost is asymmetric, which is why this errs toward missing one: a real
+#: gateway page essentially always carries the words "Gateway Time-out" or "Bad
+#: Gateway", and the status code short-circuits before any of this.
 _GATEWAY_TIMEOUT = re.compile(
     r"gateway time-?out"
     r"|bad gateway"
@@ -712,8 +729,7 @@ _GATEWAY_TIMEOUT = re.compile(
     r"|request timed out"
     r"|connection timed out"
     r"|(?:^|[^\w.])(?:http|error|status)\s*50[24]\b"
-    r"|(?:^|[^\w.])50[24]\s*"
-    r"(?=gateway|bad gateway|error|server|upstream|[-\u2013:.,)<]|$)",
+    r"|(?:^|[^\w.])50[24]\s*(?=gateway|bad gateway)",
     re.IGNORECASE,
 )
 

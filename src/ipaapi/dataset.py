@@ -149,24 +149,34 @@ def load_table(
 _COMMENT_PREFIXES = ("#", "//", ";", "!")
 
 
-def _looks_like_field_names(columns) -> bool:
-    """Whether these read as column headers rather than as a sentence.
+def _first_row_is_data(frame: "pd.DataFrame") -> bool:
+    """Whether row 0 looks like data rather than like a second header row.
 
-    Agreement on the delimiter is not enough on its own: a prose comment like
+    This is the discriminator for a first line beginning with ``#``. Agreement
+    on the delimiter is not enough on its own -- a prose comment like
     ``# DESeq2 results, liver, run 3`` above a three-column CSV splits into
-    three fields and agrees, so it was being accepted as a header while the
-    real header became data row 0. Field names are short and rarely contain
-    more than a couple of words; a sentence fragment usually does.
+    three fields and agrees -- and the shape of the names is not either:
+    "DESeq2 results" is two words, and so is a perfectly ordinary column name
+    like "log2 FC", so requiring single tokens rejected real headers such as
+    ``#Gene ID,log2 FC,p value``.
+
+    What actually separates the two cases is the line BELOW. If the comment is
+    really a comment, the next line is the true header and reads as text; if
+    the marked line is the header, the next line is data and carries numbers.
     """
-    names = [str(c).lstrip("#/;! ").strip() for c in columns]
-    if any(not n for n in names):
+    import pandas as pd
+
+    if len(frame) == 0:
         return False
-    # Every field a single token. "DESeq2 results" is two words and so is a
-    # plausible column name, so a word count is not a discriminator; requiring
-    # one token is. It costs a genuine "#Gene ID" header, which then raises the
-    # message below rather than being read -- the safe direction, since the
-    # alternative is silently promoting the real header to data.
-    return all(len(n.split()) == 1 and len(n) <= 40 for n in names)
+    row = frame.iloc[0]
+    # The identifier column is text in both cases, so judge on the rest.
+    values = list(row)[1:]
+    if not values:
+        return False
+    numeric = sum(
+        1 for v in values if pd.notna(pd.to_numeric(pd.Series([v]), errors="coerce")[0])
+    )
+    return numeric > 0
 
 
 def _warn_if_header_looks_wrong(
@@ -196,7 +206,7 @@ def _warn_if_header_looks_wrong(
         looks_like_comment
         and not single_column
         and delimiter_agreed
-        and _looks_like_field_names(frame.columns)
+        and _first_row_is_data(frame)
     ):
         stripped = str(frame.columns[0]).lstrip("#/;! ").strip()
         rest = [str(c) for c in frame.columns[1:]]
@@ -219,9 +229,9 @@ def _warn_if_header_looks_wrong(
         "--skip-rows N (skip_rows=N from Python). If the delimiter is unusual, "
         "set it with --sep.\n"
         "If that line IS the header and simply starts with a marker character, "
-        "it is read as one automatically when every field is a single word; "
-        "remove the marker, or the spaces inside the field names, and it will "
-        "be picked up."
+        "it is normally read as one -- that is decided by whether the line "
+        "below it carries numbers. Here it does not, which is what a second "
+        "header row looks like."
     )
 
 

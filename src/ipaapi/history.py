@@ -150,24 +150,37 @@ def append(
         return None
 
 
-#: Tried in order. utf-8-sig strips a BOM, which Excel writes and which
-#: otherwise renames the first column '\ufefftimestamp' -- so every timestamp
-#: reads as empty and --since reports a full log as empty. cp1252 is what
-#: Excel's "Save as Text (Tab delimited)" produces on Windows, and decoding it
-#: properly keeps a name like 'Müller_DEG' intact; replacing its bytes would
-#: break the duplicate guard, which matches dataset names exactly.
-_LOG_ENCODINGS = ("utf-8-sig", "cp1252")
-
-
 def _decode(path: str) -> str:
-    for encoding in _LOG_ENCODINGS:
-        try:
-            with open(path, "r", newline="", encoding=encoding) as fh:
-                return fh.read()
-        except UnicodeDecodeError:
-            continue
-    with open(path, "r", newline="", encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    """Decode the log, falling back per LINE rather than for the whole file.
+
+    Choosing one encoding from a single failure was too blunt: a log truncated
+    mid-character -- a kill during the append, a full disk -- made UTF-8 fail,
+    so every correctly written non-ASCII name in the file was re-read as cp1252
+    and silently mojibaked. Unlike a replacement character, that damage looks
+    like ordinary text, and ``_already_submitted`` matches dataset names
+    exactly, so the duplicate guard stopped seeing rows it had written itself.
+
+    Line by line, one damaged row costs only itself.
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    out = []
+    for line in raw.split(b"\n"):
+        for encoding in ("utf-8", "cp1252"):
+            try:
+                out.append(line.decode(encoding))
+                break
+            except UnicodeDecodeError:
+                continue
+        else:  # pragma: no cover - cp1252 decodes almost anything
+            out.append(line.decode("utf-8", errors="replace"))
+    return "\n".join(out)
 
 
 def read(path: Optional[str] = None) -> List[dict]:

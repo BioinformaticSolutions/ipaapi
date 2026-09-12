@@ -774,7 +774,12 @@ def observation_names(
 
     # Nothing is rewritten unless it has to be -- except when --strip was given,
     # which is the user asking for a rewrite regardless of length.
-    if not strip and all(len(name) <= limit for name in names):
+    # --strip is a rename the user asked for, not a licence to shorten. It used
+    # to fall through to the batch-wide suffix and disposable-token removal
+    # even when it matched nothing, so two 23-character names became "Kidney"
+    # and "Liver" -- erasing the contrast, under a note saying the change was
+    # "not optional". Apply the strip, then stop if the names now fit.
+    if all(len(name) <= limit for name in names):
         return names
 
     if strip:

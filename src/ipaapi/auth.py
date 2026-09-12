@@ -323,13 +323,21 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         result = self.server.result  # type: ignore[attr-defined]
 
         if "code" in params or "error" in params:
-            # First redirect wins. result.update() overwrote all four keys
-            # unconditionally, so a restored browser tab replaying an old
-            # authorization -- or any second hit on the redirect URI -- could
-            # replace a good code with a stale one or an error, and login()
-            # re-reads this dict after the event is set. Measured at 21 of 40
-            # trials before the guard.
-            if result.get("code") or result.get("error"):
+            # A redirect carrying the state we asked for always wins; failing
+            # that, the first arrival stands.
+            #
+            # Neither half is optional. Without any guard, a second redirect
+            # overwrote all four keys, so a restored tab replaying an old
+            # authorization replaced a good code with a stale one (21 of 40
+            # trials). With a pure first-wins guard, the same restored tab --
+            # which typically arrives FIRST, since it is already open -- locked
+            # in the stale code and the real redirect could no longer correct
+            # it, turning an intermittent failure into a certain one.
+            expected = getattr(self.server, "expected_state", None)
+            incoming = params.get("state", [None])[0]
+            already = result.get("code") or result.get("error")
+            settled = already and (expected is None or result.get("state") == expected)
+            if settled or (already and expected is not None and incoming != expected):
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -389,6 +397,9 @@ class _CallbackServer(socketserver.ThreadingMixIn, HTTPServer):
     def __init__(self, address):
         super().__init__(address, _CallbackHandler)
         self.result: Dict[str, Optional[str]] = {}
+        #: Set by login() before the browser is opened, so the handler can tell
+        #: this attempt's redirect from a stale tab replaying an old one.
+        self.expected_state: Optional[str] = None
         self.done = threading.Event()
 
 
@@ -711,6 +722,7 @@ def login(
     )
 
     server = _start_callback_server(listen_host, bind_port)
+    server.expected_state = expected_state
     try:
         if open_browser:
             if not _open_browser(authorization_url, browser):

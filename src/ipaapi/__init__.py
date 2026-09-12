@@ -44,6 +44,10 @@ from .auth import (
 from .client import AnalysisResults, IPAClient
 from .dataset import Dataset, load_table
 from .errors import (
+    AnalysisRefusedError,
+    MalformedRequestError,
+    QuotaExceededError,
+    ServiceUnavailableError,
     AnalysisError,
     AuthenticationError,
     GatewayTimeoutError,
@@ -87,6 +91,10 @@ __all__ = [
     "IPAError",
     "AuthenticationError",
     "GatewayTimeoutError",
+    "QuotaExceededError",
+    "MalformedRequestError",
+    "AnalysisRefusedError",
+    "ServiceUnavailableError",
     "MappingError",
     "SubmissionError",
     "AnalysisError",
