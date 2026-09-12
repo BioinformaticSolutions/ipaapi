@@ -7,6 +7,74 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## Unreleased
+
+Found by reading the package end to end, not by hitting them in use. Each was
+reproduced before being written down. Nothing here is released yet; these are
+held for the next version rather than spent one at a time on patch releases.
+
+### Bugs
+
+- **Non-finite values pass validation and are transmitted as text.**
+  `is_plausible` returns True for `inf` under `foldchange` (`inf >= 1`),
+  `logratio` and `other` (unbounded), and `ratio` and `intensity` (upper bound
+  is `inf`, and `inf <= inf`). A column holding `Inf` therefore clears
+  `--no-range-check`'s opposite -- the check that is supposed to catch exactly
+  this -- and `_format` hands IPA the literal string `Inf`. DESeq2 and edgeR
+  emit `Inf`/`-Inf` log fold changes whenever one group has zero counts, so
+  this is ordinary output, not a corner case. IPA cannot read it as a number
+  and will either reject the submission behind its unhelpful outage page or
+  drop those rows silently. Reject non-finite values in `_check_ranges`, naming
+  the rows.
+
+- **The quota classifier fires on any body containing "exceeded" or "limit
+  reached".** `looks_like_quota` is checked first in `_raise_submission_error`,
+  so it wins over every other branch. Bodies like "Maximum upload size
+  exceeded" and "Observation name length exceeded the maximum permitted" both
+  raise `QuotaExceededError`. The consequences compound: `cmd_submit` treats
+  quota as "the file is fine, IPA is busy", so it breaks out of the loop,
+  leaves that file and every file after it in place, and prints that the
+  allowance is exhausted. The file is never quarantined into `failed/`, and the
+  next run fails on it identically -- a permanent per-file error becomes an
+  unbounded retry loop wearing the wrong diagnosis. Require the confirmed
+  wording, or pair the generic words with an analysis-related noun.
+
+- **The gateway-timeout pattern matches a bare 502 or 504 anywhere in the
+  body.** `\b50[24]\b` in `_GATEWAY_TIMEOUT` matches "Unable to run analysis:
+  504 identifiers could not be mapped", and since the timeout branch is checked
+  before the `Unable to run analysis` branch, a genuine refusal is reported as
+  a timeout with the message "your command and your data are almost certainly
+  fine". Narrower than it first looks -- `504px` and `Sample_504_x` do not
+  match, because the boundary needs a non-word character -- but a count or an
+  index rendered as a bare number does. Restrict the numeric alternative to the
+  status-code position, or drop it and rely on the status code and the phrases.
+
+- **The token cache is world-readable while the token is in it.**
+  `TokenCache.put` opens the temp file with `open(tmp, "w")`, writes the access
+  and refresh tokens, and only then calls `os.chmod(..., 0600)`. Measured: the
+  file exists at 0644 with the token in it before the chmod lands. The final
+  file is 0600, so the docstring's claim is true of the result and not of the
+  path taken to it. It matters on exactly the machine this tool is built for --
+  a shared analysis server. Create it with `os.open(..., O_CREAT | O_EXCL,
+  0o600)` instead.
+
+- **The FDR percentage warning does not mention the cutoff.** The warning added
+  in 1.3.0 tells the user to multiply the column by 100, which is right. But
+  `--fdr COLUMN:CUTOFF` sends the cutoff on the same percentage scale and it is
+  not multiplied. A user who follows the advice ends up with the column on the
+  percent scale and the cutoff still a fraction -- 100x stricter than intended,
+  and silently so, which is the failure the warning exists to prevent. Say so
+  in the warning, and warn when an `--fdr` cutoff is <= 1.
+
+### Also
+
+- `auth.py` tells a user with a missing dependency to run
+  `pip install requests-oauthlib`. A bare `pip` does not exist on macOS or most
+  Linux distributions, and this branch is reached precisely when the
+  environment is already confused about what is installed where. Use
+  `sys.executable`. The sibling raise on the refresh path gives no remedy at
+  all.
+
 ## 1.3.0 — 2026-09-12
 
 ### Added
