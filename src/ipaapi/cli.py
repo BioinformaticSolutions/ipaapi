@@ -772,15 +772,19 @@ def observation_names(
     """
     names = list(names)
 
-    # Nothing is rewritten unless it has to be -- except when --strip was given,
-    # which is the user asking for a rewrite regardless of length.
-    # --strip is a rename the user asked for, not a licence to shorten. It used
-    # to fall through to the batch-wide suffix and disposable-token removal
-    # even when it matched nothing, so two 23-character names became "Kidney"
-    # and "Liver" -- erasing the contrast, under a note saying the change was
-    # "not optional". Apply the strip, then stop if the names now fit.
-    if all(len(name) <= limit for name in names):
-        return names
+    # Whether shortening is needed is judged on the names AS GIVEN, before
+    # --strip touches them. That is what reconciles the two things --strip has
+    # to satisfy, and guarding on the post-strip names gets one or the other
+    # wrong every time:
+    #
+    #   * --strip is a rename, not a licence to shorten. A --strip that matched
+    #     nothing must not trigger the batch-wide suffix and disposable-token
+    #     removal, or two 23-character names become "Kidney" and "Liver".
+    #   * --strip must not make the result worse than omitting it. When the
+    #     names are over the limit and --strip frees just enough room, the
+    #     pipeline metadata still has to come off, or passing the flag produces
+    #     a longer, uglier name than not passing it.
+    needs_shortening = not all(len(name) <= limit for name in names)
 
     if strip:
         # Applied together and judged once. Validating each pattern separately
@@ -801,6 +805,9 @@ def observation_names(
                 file=sys.stderr,
             )
 
+    # Shortening starts here, and only if it was needed to begin with.
+    if not needs_shortening:
+        return names
     # Pipeline metadata goes first and goes completely -- both the tokens
     # recognisable as settings and whatever tail the whole batch happens to
     # share. Doing these together matters: stopping as soon as the names merely

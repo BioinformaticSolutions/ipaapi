@@ -718,9 +718,12 @@ _OUTAGE = re.compile(
 #: files left in place, "your command and your data are almost certainly fine",
 #: and the same failure on every re-run.
 #:
-#: The cost is asymmetric, which is why this errs toward missing one: a real
-#: gateway page essentially always carries the words "Gateway Time-out" or "Bad
-#: Gateway", and the status code short-circuits before any of this.
+#: The cost is asymmetric, which is why this errs toward missing one rather
+#: than toward a false positive, and why the phrase list is long: "Gateway
+#: Time-out" and "Bad Gateway" alone are not enough, since Apache says "proxy
+#: error", Squid says "read timeout", Envoy says "upstream request timeout",
+#: and Akamai says none of them. The status code short-circuits before any of
+#: this, so all of it only matters for a proxy page delivered inside HTTP 200.
 _GATEWAY_TIMEOUT = re.compile(
     r"gateway time-?out"
     r"|bad gateway"
@@ -728,7 +731,14 @@ _GATEWAY_TIMEOUT = re.compile(
     r"|did not respond in time"
     r"|request timed out"
     r"|connection timed out"
-    r"|(?:^|[^\w.])(?:http|error|status)\s*50[24]\b"
+    r"|proxy error"
+    r"|proxy server received an invalid response"
+    r"|read timeout"
+    r"|upstream request timeout"
+    r"|upstream connect error"
+    r"|error from cloudfront"
+    r"|an error occurred while processing your request"
+    r"|(?:^|[^\w.])(?:http|error|status)[\s:]*50[24]\b"
     r"|(?:^|[^\w.])50[24]\s*(?=gateway|bad gateway)",
     re.IGNORECASE,
 )

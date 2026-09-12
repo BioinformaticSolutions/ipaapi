@@ -365,7 +365,19 @@ class _CallbackHandler(BaseHTTPRequestHandler):
                 self.wfile.write(_SUCCESS_PAGE if ok else _FAILURE_PAGE)
             except OSError:
                 pass  # the browser hung up; we already have what we need
-            self.server.done.set()  # type: ignore[attr-defined]
+
+            # Wake login() only for a redirect that belongs to THIS attempt.
+            #
+            # Setting it on any arrival is what made the "matching state wins"
+            # rule unreachable: a restored tab replaying an old authorization
+            # arrives first, login woke on it, read the stale state, raised a
+            # mismatch and closed the server -- so the genuine redirect landed
+            # on a closed port and the preference never got to apply. Holding
+            # the event until the state matches lets the real one through, and
+            # a redirect that never matches simply runs out the login timeout,
+            # which now says a mismatched redirect was seen.
+            if expected is None or incoming == expected:
+                self.server.done.set()  # type: ignore[attr-defined]
         else:
             self.send_response(404)
             self.end_headers()
@@ -731,6 +743,16 @@ def login(
             print("Open this URL to authorize:\n" + authorization_url)
 
         if not server.done.wait(timeout=timeout):
+            seen = server.result.get("state")
+            if seen is not None and seen != expected_state:
+                raise AuthenticationError(
+                    f"Timed out after {timeout:g}s waiting for authorization.\n"
+                    "A redirect did arrive, but it carried the state of a "
+                    "different login attempt, so it was not used -- almost "
+                    "always a browser tab left open from an earlier run "
+                    "replaying its old authorization. Close any other tab "
+                    "pointing at the redirect URI and try again."
+                )
             raise AuthenticationError(
                 f"Timed out after {timeout:g}s waiting for authorization. "
                 "Nothing arrived at the redirect URI -- was the browser window "

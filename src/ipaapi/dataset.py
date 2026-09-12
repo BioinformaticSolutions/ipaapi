@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Union
 
 from .errors import MappingError
-from .mapping import ColumnMapping
+from .mapping import ColumnMapping, is_blank
 from .models import MeasurementType
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -166,17 +166,29 @@ def _first_row_is_data(frame: "pd.DataFrame") -> bool:
     """
     import pandas as pd
 
-    if len(frame) == 0:
+    if len(frame) == 0 or len(frame.columns) < 2:
         return False
-    row = frame.iloc[0]
-    # The identifier column is text in both cases, so judge on the rest.
-    values = list(row)[1:]
-    if not values:
-        return False
-    numeric = sum(
-        1 for v in values if pd.notna(pd.to_numeric(pd.Series([v]), errors="coerce")[0])
-    )
-    return numeric > 0
+
+    # The FIRST row that says anything decides, and only that row. It has to be
+    # the first: in the comment case row 0 is the real header, and looking
+    # further down would find the genuine data beneath it and conclude the
+    # comment was a header after all.
+    #
+    # Blank rows are skipped rather than counted against it, which is the other
+    # half. A real '#'-marked header whose first gene carries NA everywhere --
+    # a zero-count gene, which sorting can easily put first -- is not evidence
+    # of anything, and treating it as evidence got the file refused with advice
+    # that then promoted a data row to header and lost a gene.
+    for _, row in frame.iloc[: min(len(frame), 5)].iterrows():
+        values = [v for v in list(row)[1:] if not is_blank(v)]
+        if not values:
+            continue
+        return bool(pd.to_numeric(pd.Series(values), errors="coerce").notna().any())
+
+    # Nothing but blanks. Either the marked line is a comment above the real
+    # header, or the table carries no measurements at all -- and this tool
+    # needs a numeric column either way, so refusing is right.
+    return False
 
 
 def _warn_if_header_looks_wrong(
@@ -228,10 +240,14 @@ def _warn_if_header_looks_wrong(
         "If the file has comment or title lines above the header, skip them with "
         "--skip-rows N (skip_rows=N from Python). If the delimiter is unusual, "
         "set it with --sep.\n"
-        "If that line IS the header and simply starts with a marker character, "
-        "it is normally read as one -- that is decided by whether the line "
-        "below it carries numbers. Here it does not, which is what a second "
-        "header row looks like."
+        + (
+            "\nIf that line IS the header and simply starts with a marker "
+            "character, it is normally read as one -- that is decided by "
+            "whether the rows below it carry numbers. Here they do not, which "
+            "is what a second header row looks like."
+            if looks_like_comment and not single_column
+            else ""
+        )
     )
 
 

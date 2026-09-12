@@ -591,7 +591,17 @@ def test_a_multi_word_hash_header_is_read():
 def test_strip_does_not_shorten_names_that_already_fit():
     """--strip is a rename, not a licence to run the whole pipeline."""
     names = ["Kidney_KO_vs_WT_results", "Liver_KO_vs_WT_results"]
-    assert cli.observation_names(names, strip="_nomatch") == names
+    assert cli.observation_names(names, strip=["_nomatch"]) == names
+
+
+def test_strip_still_strips_when_the_names_already_fit():
+    """Short names are exactly when --strip is the only way to rename, so
+    guarding the strip behind the length check made the flag a silent no-op."""
+    names = ["Estrus_vs_2dpp_ovary_paralome_v3", "Diestrus_vs_2dpp_ovary_paralome_v3"]
+    assert cli.observation_names(names, strip=["_paralome_v3"]) == [
+        "Estrus_vs_2dpp_ovary",
+        "Diestrus_vs_2dpp_ovary",
+    ]
 
 
 def test_one_bad_byte_does_not_mojibake_the_whole_log():
@@ -649,3 +659,82 @@ def test_the_documented_error_classes_import_from_the_package(name):
     import ipaapi
     assert hasattr(ipaapi, name)
     assert name in ipaapi.__all__
+
+
+# -- fourth audit round ------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [
+    "<html><head><title>502 Proxy Error</title></head><body><h1>Proxy Error</h1>"
+    "<p>The proxy server received an invalid response from an upstream server.</p></body></html>",
+    "ERROR: The requested URL could not be retrieved. Read timeout.",
+    "upstream request timeout",
+    "An error occurred while processing your request. Reference #97.1f2, Error: 504",
+    "The request could not be satisfied. Error from cloudfront",
+    "HTTP Error 502.3 - Bad Gateway",
+])
+def test_real_proxy_pages_are_recognised(body):
+    """"Gateway Time-out" and "Bad Gateway" are not the only wordings: Apache
+    says proxy error, Squid says read timeout, Envoy says upstream request
+    timeout, Akamai says none of them."""
+    assert looks_like_gateway_timeout(200, body)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("#Gene ID,log2 FC,p value\nENSG1,NA,NA\nENSG2,-3.0,0.02\n", ["Gene ID", "log2 FC", "p value"]),
+    ("#Gene ID,log2 FC,p value\nENSG1,,\nENSG2,-3.0,0.02\n", ["Gene ID", "log2 FC", "p value"]),
+])
+def test_a_hash_header_survives_a_blank_first_row(text, expected):
+    """A zero-count gene carrying NA everywhere can sort first; it is not
+    evidence that the marked line was a comment."""
+    assert list(load_table(write(text)).columns) == expected
+
+
+def test_a_comment_whose_fields_include_a_number_is_still_a_comment():
+    """The row below decides, and only that row -- looking further down finds
+    the real data and concludes the comment was a header after all."""
+    path = write("# DESeq2 results, 24, 48\nGene,t24,t48\nENSG1,2.0,0.01\nENSG2,-3,0.2\n")
+    with pytest.raises(MappingError, match="header row"):
+        load_table(path)
+
+
+def test_strip_applies_but_does_not_shorten():
+    """Both halves, since guarding on the post-strip names gets one wrong."""
+    fits = ["Estrus_vs_2dpp_ovary_paralome_v3", "Diestrus_vs_2dpp_ovary_paralome_v3"]
+    assert cli.observation_names(fits, strip=["_paralome_v3"]) == [
+        "Estrus_vs_2dpp_ovary", "Diestrus_vs_2dpp_ovary",
+    ]
+    unchanged = ["Kidney_KO_vs_WT_results", "Liver_KO_vs_WT_results"]
+    assert cli.observation_names(unchanged, strip=["_nomatch"]) == unchanged
+
+
+def test_a_stale_redirect_does_not_wake_login():
+    """Waking on any arrival is what made 'matching state wins' unreachable:
+    login read the stale state, raised, and closed the port before the genuine
+    redirect landed."""
+    import threading
+    from ipaapi.auth import _CallbackHandler
+
+    class FakeServer:
+        def __init__(self):
+            self.result = {}
+            self.expected_state = "NEW"
+            self.done = threading.Event()
+
+    server = FakeServer()
+
+    def hit(query):
+        handler = _CallbackHandler.__new__(_CallbackHandler)
+        handler.server = server
+        handler.path = query
+        handler.send_response = lambda *a, **k: None
+        handler.send_header = lambda *a, **k: None
+        handler.end_headers = lambda: None
+        handler.wfile = type("W", (), {"write": lambda self, b: None})()
+        handler.do_GET()
+
+    hit("/?code=STALE&state=OLD")
+    assert not server.done.is_set()          # login keeps waiting
+    hit("/?code=REAL&state=NEW")
+    assert server.done.is_set()
+    assert server.result["code"] == "REAL"
