@@ -196,6 +196,38 @@ def parse_fc_spec(text: str) -> Tuple[int, MeasurementType, Optional[float]]:
     return index, measurement, cutoff
 
 
+def parse_stat_spec(text: str, flag: str) -> Tuple[int, Optional[float]]:
+    """Parse ``COLUMN[:CUTOFF]`` for --pvalue and --fdr.
+
+    No type component, unlike --FC: the flag name fixes the measurement type,
+    which is the point of having separate flags rather than making people spell
+    out ``--FC 5:pvalue``.
+    """
+    parts = text.split(":")
+    if len(parts) not in (1, 2):
+        raise argparse.ArgumentTypeError(
+            f"{flag} expects COLUMN[:CUTOFF] (for example 5:0.05), got {text!r}."
+        )
+    index = _parse_index(parts[0].strip(), flag)
+    cutoff = None
+    if len(parts) == 2 and parts[1].strip():
+        try:
+            cutoff = float(parts[1])
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{flag} cutoff {parts[1]!r} is not a number."
+            ) from None
+    return index, cutoff
+
+
+def parse_pvalue_spec(text: str) -> Tuple[int, Optional[float]]:
+    return parse_stat_spec(text, "--pvalue")
+
+
+def parse_fdr_spec(text: str) -> Tuple[int, Optional[float]]:
+    return parse_stat_spec(text, "--fdr")
+
+
 def _parse_index(text: str, flag: str) -> int:
     try:
         index = int(text)
@@ -230,8 +262,16 @@ def build_mapping(
     id_specs: List[Tuple[int, str]],
     fc_spec: Tuple[int, MeasurementType, Optional[float]],
     observation_name: Optional[str] = None,
+    pvalue_spec: Optional[Tuple[int, Optional[float]]] = None,
+    fdr_spec: Optional[Tuple[int, Optional[float]]] = None,
 ) -> ColumnMapping:
-    """Turn parsed CLI specs into a :class:`ColumnMapping`."""
+    """Turn parsed CLI specs into a :class:`ColumnMapping`.
+
+    Measurement order is fixed -- fold change, then p-value, then FDR -- because
+    the wire format declares the measurement slots once for the whole
+    submission and then fills them positionally. A stable order keeps the
+    encoding reproducible.
+    """
     if not id_specs:
         raise IPAError("--ID is required.")
     if len(id_specs) > 2:
@@ -261,6 +301,25 @@ def build_mapping(
             "used as an identifier column."
         )
 
+    measurements = [Measurement(fc_column, fc_type, cutoff=fc_cutoff)]
+    taken = {primary_column, fallback_column, fc_column}
+
+    for spec, kind, flag in (
+        (pvalue_spec, MeasurementType.P_VALUE, "--pvalue"),
+        (fdr_spec, MeasurementType.FALSE_DISCOVERY, "--fdr"),
+    ):
+        if spec is None:
+            continue
+        index, cutoff = spec
+        column = _column_at(columns, index, flag)
+        if column in taken:
+            raise IPAError(
+                f"{flag} refers to column {index} ({column!r}), which is already "
+                "used by another flag. Each column may be claimed once."
+            )
+        taken.add(column)
+        measurements.append(Measurement(column, kind, cutoff=cutoff))
+
     return ColumnMapping(
         gene_id_column=primary_column,
         gene_id_type=primary_type,
@@ -269,7 +328,7 @@ def build_mapping(
         observations=[
             Observation(
                 name=observation_name or fc_column,
-                measurements=[Measurement(fc_column, fc_type, cutoff=fc_cutoff)],
+                measurements=measurements,
             )
         ],
     )
@@ -761,6 +820,8 @@ def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]
                 id_specs=args.ID,
                 fc_spec=args.FC,
                 observation_name=names[path],
+                pvalue_spec=getattr(args, "pvalue", None),
+                fdr_spec=getattr(args, "fdr", None),
             )
             dataset = Dataset.from_frame(
                 frame,
@@ -792,6 +853,23 @@ def _add_mapping_arguments(parser: argparse.ArgumentParser) -> None:
         "matches as a substring (SampleA finds SampleA_DEG.txt); text containing "
         "* ? or [ is treated as a glob. Default: "
         + ", ".join(TABLE_PATTERNS),
+    )
+    parser.add_argument(
+        "--pvalue",
+        type=parse_pvalue_spec,
+        default=None,
+        metavar="COLUMN[:CUTOFF]",
+        help="0-based column holding p-values, with an optional cutoff. Values "
+        "must lie in [0, 1]; IPA silently discards anything outside it",
+    )
+    parser.add_argument(
+        "--fdr",
+        type=parse_fdr_spec,
+        default=None,
+        metavar="COLUMN[:CUTOFF]",
+        help="0-based column holding false discovery rates, with an optional "
+        "cutoff. NOTE IPA reads this as a PERCENTAGE in [0, 100], so a q-value "
+        "of 0.05 means 0.05%%, not 5%%",
     )
     parser.add_argument(
         "--strip",
@@ -893,6 +971,94 @@ def _client(args):
 
 
 # -- subcommands -----------------------------------------------------------
+
+
+def cmd_login(args) -> int:
+    """Authenticate and cache a token, without submitting anything.
+
+    Every other command logs in as a side effect of doing something else, which
+    makes authentication awkward to test: the only way to find out whether
+    credentials work is to spend analysis allowance finding out. This does the
+    login on its own, and says where the token went and how long it lasts.
+    """
+    # The default client and host are used deliberately rather than being
+    # exposed as flags: the cache is keyed on (client_id, application_name,
+    # host), so a login under a different key would be invisible to every other
+    # command -- a login that appears to work and changes nothing.
+    from .auth import DEFAULT_CLIENT_ID, DEFAULT_HOST, TokenCache, login
+
+    cache = None
+    if not args.no_cache:
+        cache = TokenCache(path=args.token_file) if args.token_file else TokenCache()
+
+    if args.forget:
+        if cache is None:
+            raise IPAError("--forget needs the token cache; drop --no-cache.")
+        cache.clear()
+        print(f"Cleared the token cache at {cache.path}.")
+        return 0
+
+    existing = None
+    if cache is not None and not args.force:
+        existing = cache.get(
+            client_id=DEFAULT_CLIENT_ID,
+            application_name=args.application_name,
+            host=DEFAULT_HOST,
+            allow_expired=True,
+        )
+
+    if existing is not None and not existing.is_expired and not args.force:
+        print(f"Already signed in as {args.application_name} on {DEFAULT_HOST}.")
+        print(f"  token cache: {cache.path}")
+        print(f"  {_expiry_phrase(existing)}")
+        print("\nUse --force to sign in again anyway.")
+        return 0
+
+    credentials = login(
+        client_id=DEFAULT_CLIENT_ID,
+        application_name=args.application_name,
+        host=DEFAULT_HOST,
+        cache=cache,
+        open_browser=not args.no_browser,
+        browser=getattr(args, "browser", None),
+        force=args.force,
+    )
+
+    print("Signed in.")
+    if cache is not None:
+        print(f"  token cache: {cache.path}")
+    print(f"  {_expiry_phrase(credentials)}")
+    if credentials.refresh_token:
+        print(
+            "  a refresh token was issued, so the next command should not need "
+            "the browser"
+        )
+    else:
+        print(
+            "  no refresh token was issued -- expect to sign in again when this "
+            "one expires"
+        )
+    if cache is not None:
+        print(
+            f"\nTo use this token on another machine, copy {cache.path} across and "
+            "point IPAAPI_TOKEN_FILE at it, or pass --token-file."
+        )
+    return 0
+
+
+def _expiry_phrase(credentials) -> str:
+    """Describe when a token runs out, in terms worth acting on."""
+    import time
+
+    if credentials.expires_at is None:
+        return "expiry: not reported by IPA"
+    remaining = credentials.expires_at - time.time()
+    if remaining <= 0:
+        return "expiry: already expired"
+    hours, minutes = divmod(int(remaining) // 60, 60)
+    span = f"{hours}h {minutes}m" if hours else f"{minutes}m"
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(credentials.expires_at))
+    return f"expires in {span} (at {stamp})"
 
 
 def cmd_validate(args) -> int:
@@ -1399,6 +1565,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_auth_arguments(hist)
     hist.set_defaults(func=cmd_history)
+
+    signin = subparsers.add_parser(
+        "login",
+        help="authenticate and cache a token without submitting anything",
+        description=cmd_login.__doc__,
+        epilog=(
+            "Useful for three things: checking that credentials work without "
+            "spending analysis allowance, refreshing a token before a long "
+            "batch so it does not expire mid-run, and setting up a headless "
+            "server.\n\n"
+            "Headless: run this on a machine with a browser, then copy the "
+            "token cache to the server and point IPAAPI_TOKEN_FILE at it. Or "
+            "forward the browser with 'ssh -X' and run it there.\n\n"
+            "examples:\n"
+            "  ipaapi login\n"
+            "  ipaapi login --force              # sign in again even if valid\n"
+            "  ipaapi login --no-browser         # print the URL instead\n"
+            "  ipaapi login --forget             # clear the cached token\n"
+        ),
+        formatter_class=_Formatter,
+    )
+    signin.add_argument(
+        "--force",
+        action="store_true",
+        help="sign in again even if a valid token is cached",
+    )
+    signin.add_argument(
+        "--forget",
+        action="store_true",
+        help="delete the cached token and exit",
+    )
+    signin.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the authorization URL instead of opening a browser",
+    )
+    _add_auth_arguments(signin)
+    signin.set_defaults(func=cmd_login)
 
     return parser
 

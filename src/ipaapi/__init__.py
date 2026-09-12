@@ -46,6 +46,7 @@ from .dataset import Dataset, load_table
 from .errors import (
     AnalysisError,
     AuthenticationError,
+    GatewayTimeoutError,
     IPAError,
     MappingError,
     ResultsUnavailableError,
@@ -56,7 +57,7 @@ from .models import GENE_ID_TYPES, AnalysisStatus, MeasurementType, ReferenceSet
 
 #: Single source of truth for the package version; pyproject.toml reads it from
 #: here at build time. Bump it in this file and nowhere else.
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "__version__",
@@ -85,6 +86,7 @@ __all__ = [
     # errors
     "IPAError",
     "AuthenticationError",
+    "GatewayTimeoutError",
     "MappingError",
     "SubmissionError",
     "AnalysisError",

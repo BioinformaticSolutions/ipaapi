@@ -31,6 +31,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -418,17 +419,97 @@ def refresh(
     return renewed
 
 
+def port_holder(port: int) -> Optional[Dict[str, str]]:
+    """Identify the process listening on *port*, if it can be worked out.
+
+    The OAuth redirect port cannot be changed -- it is registered with the
+    client -- so a collision has to be resolved by dealing with whatever holds
+    the port. Naming that process turns a dead end into one command, and it is
+    very often a previous ipaapi login that never exited.
+
+    Returns a dict with ``pid`` and ``command``, or ``None`` if nothing could be
+    determined. Best effort by design: this runs while reporting another error,
+    so every failure path returns ``None`` rather than raising.
+    """
+    import shutil
+    import subprocess
+
+    # lsof is the most widely available; ss is the modern Linux answer and is
+    # present where lsof often is not, such as slim containers.
+    attempts = []
+    if shutil.which("lsof"):
+        attempts.append((["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"], "lsof"))
+    if shutil.which("ss"):
+        attempts.append((["ss", "-ltnpH", f"sport = :{port}"], "ss"))
+
+    for argv, tool in attempts:
+        try:
+            out = subprocess.run(
+                argv, capture_output=True, text=True, timeout=5
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if not out.strip():
+            continue
+
+        if tool == "lsof":
+            # -F emits one field per line, tagged: p<pid>, c<command>.
+            pid = command = None
+            for line in out.splitlines():
+                if line.startswith("p"):
+                    pid = line[1:].strip()
+                elif line.startswith("c"):
+                    command = line[1:].strip()
+            if pid:
+                return {"pid": pid, "command": command or "unknown"}
+        else:
+            # users:(("python3",pid=921212,fd=3))
+            match = re.search(r'\(\("([^"]+)",pid=(\d+)', out)
+            if match:
+                return {"pid": match.group(2), "command": match.group(1)}
+    return None
+
+
+def _port_collision_message(host: str, port: int, reason: str) -> str:
+    """Explain a bound redirect port, naming the culprit where possible."""
+    lines = [
+        f"Cannot listen on {host}:{port} for the OAuth redirect ({reason}).",
+        "",
+        "The redirect URI is registered with the OAuth client, so this port "
+        "cannot simply be changed -- whatever is holding it has to go.",
+    ]
+
+    holder = port_holder(port)
+    if holder:
+        pid, command = holder["pid"], holder["command"]
+        lines += ["", f"Held by PID {pid} ({command})."]
+        if "python" in command.lower() or "ipaapi" in command.lower():
+            lines.append(
+                "That looks like an earlier ipaapi login that never exited -- a "
+                "login interrupted before the browser came back leaves the "
+                "callback server running."
+            )
+        lines += ["", f"    kill {pid}", "", "then run the same command again."]
+    else:
+        lines += [
+            "",
+            "Could not determine what is holding it. To find out:",
+            "",
+            f"    lsof -nP -iTCP:{port} -sTCP:LISTEN      # macOS",
+            f"    ss -ltnp 'sport = :{port}'              # Linux",
+            "",
+            "A stale ipaapi from an interrupted login is the usual cause.",
+        ]
+    return "\n".join(lines)
+
+
 def _start_callback_server(host: str, port: int) -> _CallbackServer:
     try:
         server = _CallbackServer((host, port))
     except OSError as exc:
         if exc.errno in (errno.EADDRINUSE, errno.EACCES):
             raise AuthenticationError(
-                f"Cannot listen on {host}:{port} for the OAuth redirect ({exc.strerror}). "
-                "Another process is probably using that port -- stop it, or pass a "
-                "different redirect_uri. Note the redirect URI must be registered with "
-                "the OAuth client, so for the default public client it has to be "
-                f"{DEFAULT_REDIRECT_URI}."
+                _port_collision_message(host, port, exc.strerror or str(exc))
             ) from exc
         raise AuthenticationError(f"Could not start the OAuth callback server: {exc}") from exc
     threading.Thread(target=server.serve_forever, daemon=True).start()

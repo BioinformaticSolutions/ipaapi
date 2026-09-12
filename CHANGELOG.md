@@ -7,6 +7,61 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 1.3.0 — 2026-09-12
+
+### Added
+
+- **`--pvalue COLUMN[:CUTOFF]` and `--fdr COLUMN[:CUTOFF]`**, for unfiltered
+  tables that still carry their statistics. The measurement type comes from the
+  flag, so there is no `:TYPE` to get wrong. Slot order is fixed — fold change,
+  then p-value, then FDR — because the wire format declares the slots once for
+  the whole submission and then fills them positionally.
+
+  A submission using only `--FC` encodes byte for byte as it did in 1.2.0.
+
+- **A warning when an FDR column looks like a fraction.** IPA reads
+  `falsediscovery` as a **percentage** in [0, 100], while statistical software
+  emits q-values in [0, 1]. Both are inside the accepted range, so nothing is
+  rejected and nothing is discarded — a q-value of 0.05 is simply taken as
+  0.05%, and any cutoff applied in IPA silently keeps far less than intended.
+  This is the one measurement type where the range check cannot help, because
+  the wrong scale is a valid value, so the warning fires on the shape of the
+  distribution instead.
+
+- **`ipaapi login`**, to authenticate and cache a token without submitting
+  anything. Reports where the token was written, when it expires, and whether a
+  refresh token was issued. Previously the only way to find out whether
+  credentials worked was to spend analysis allowance finding out. `--force`
+  signs in again, `--forget` clears the cache.
+
+  It deliberately offers no `--client-id` or `--host`: the cache is keyed on
+  those, so a login under a different key would be invisible to every other
+  command — a login that appears to work and changes nothing.
+
+### Fixed
+
+- **A gateway timeout is no longer reported as a bad parameter.** IPA delivers
+  these in the body of an HTTP 200, like its other errors, so the existing
+  502/503/504 status check never saw them and the response fell through to
+  "IPA would not accept one of the submission parameters" — pointing at
+  `--reference-set` and `--ID`, neither of which had anything to do with it.
+
+  The new message names the two known causes in order: an over-long observation
+  name, which has been observed to time out as well as to be rejected outright,
+  and a slow transfer over a congested link or VPN. It also warns that a
+  timeout loses the *answer* and not necessarily the *request*, so the file may
+  have been created and a retry may collide with it.
+
+  Raised as `GatewayTimeoutError`, a subclass of `ServiceUnavailableError` so
+  existing handlers keep working.
+
+- **A held OAuth port now names what is holding it.** The redirect URI is
+  registered with the OAuth client and cannot be changed, so a collision has to
+  be resolved by dealing with the process — which is very often a previous
+  `ipaapi login` that never exited. `ipaapi` now identifies it via `lsof` or
+  `ss`, says so, and prints the `kill` command. When neither tool is present it
+  prints the diagnostic command for the platform instead.
+
 ## 1.2.0 — 2026-08-24
 
 ### Fixed

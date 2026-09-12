@@ -17,6 +17,7 @@ from .dataset import Dataset
 from .errors import (
     AnalysisError,
     AnalysisRefusedError,
+    GatewayTimeoutError,
     IPAError,
     MalformedRequestError,
     QuotaExceededError,
@@ -616,6 +617,34 @@ _OUTAGE = re.compile(
     re.IGNORECASE,
 )
 
+#: A gateway giving up on IPA's backend.
+#:
+#: Delivered in the *body* of an HTTP 200, like every other IPA error, so the
+#: status-code check below never sees it. Observed wording: "504 Gateway
+#: Time-out The server didn't respond in time."
+_GATEWAY_TIMEOUT = re.compile(
+    r"gateway time-?out"
+    r"|bad gateway"
+    r"|didn'?t respond in time"
+    r"|did not respond in time"
+    r"|request timed out"
+    r"|connection timed out"
+    r"|\b50[24]\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_gateway_timeout(status_code: Optional[int], body: str) -> bool:
+    """Whether the response is a timeout rather than a considered refusal.
+
+    Worth separating from a plain outage because the advice differs: the
+    request may have reached IPA and been acted on even though the answer never
+    came back.
+    """
+    if status_code in (502, 504):
+        return True
+    return bool(_GATEWAY_TIMEOUT.search(body or ""))
+
 
 def looks_like_outage(status_code: Optional[int], body: str) -> bool:
     """Whether the response is IPA being down rather than rejecting the request."""
@@ -634,6 +663,33 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
         detail = html_error_text(body) if looks_like_html(body) else excerpt
         raise QuotaExceededError(
             f"REJECTED: the analysis allowance appears to be exhausted.\n\n"
+            f"IPA said: {detail!r}",
+            status_code=status_code,
+            body=excerpt,
+        )
+
+    # Before the outage branch: a timeout is not a maintenance page, and the
+    # advice differs enough that conflating them misleads.
+    if looks_like_gateway_timeout(status_code, body):
+        detail = html_error_text(body) if looks_like_html(body) else excerpt
+        raise GatewayTimeoutError(
+            "REJECTED: the request timed out before IPA answered.\n\n"
+            "A gateway gave up waiting for IPA's backend. This is not a "
+            "parameter problem -- your command and your data are almost "
+            "certainly fine. Two causes are known:\n\n"
+            "  1. An over-long observation name. IPA has been seen to time out "
+            "on these as well as reject them outright. Since names come from "
+            "filenames, this is worth ruling out first: run 'ipaapi --version' "
+            "and upgrade if it is below 1.2.0, which shortens them "
+            "automatically.\n"
+            "  2. A slow transfer. A congested link or an active VPN can push "
+            "a large submission past the gateway's patience.\n\n"
+            "Note the request may have reached IPA anyway -- a timeout loses "
+            "the answer, not necessarily the request. If this file turns up "
+            "rejected as a duplicate on the next run, that is why, and it "
+            "means the analysis was created.\n\n"
+            "The remaining files were left in place, so re-running the same "
+            "command resumes.\n\n"
             f"IPA said: {detail!r}",
             status_code=status_code,
             body=excerpt,

@@ -86,6 +86,22 @@ class ServiceUnavailableError(SubmissionError):
     """
 
 
+class GatewayTimeoutError(ServiceUnavailableError):
+    """A gateway gave up waiting for IPA's backend.
+
+    A subclass of :class:`ServiceUnavailableError` because the response is the
+    same -- wait and re-run -- but worth naming separately, because a timeout
+    differs from an outage in one way that matters: the request may have
+    reached IPA and been acted on even though the answer never came back. A
+    retry can therefore collide with a dataset the timed-out attempt created.
+
+    Two causes are known. The submission may genuinely be slow to transfer, on
+    a congested link or through a VPN. Or the request may be one IPA cannot
+    process -- an over-long observation name has been seen to surface this way
+    as well as via the maintenance page.
+    """
+
+
 class AnalysisRefusedError(SubmissionError):
     """IPA accepted the request but would not start the analysis.
 

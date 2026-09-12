@@ -187,6 +187,7 @@ ipaapi submit     upload into a project and start analyses
 ipaapi status     check the state of existing analyses
 ipaapi report     print IPA Interpret links
 ipaapi history    list analyses submitted through this tool
+ipaapi login      authenticate and cache a token without submitting
 ```
 
 ### Mapping arguments
@@ -203,6 +204,8 @@ Used by `validate` and `submit`.
 | `--pattern` | `TEXT` | when PATH is a directory: substring or glob selecting files |
 | `--recursive` | flag | search subdirectories too |
 | `--observation` | `NAME` | observation name in IPA (default: the filename). Single file only. Shortened to 60 characters if needed — see [long observation names](#long-observation-names) |
+| `--pvalue` | `COLUMN[:CUTOFF]` | 0-based p-value column, optional cutoff. Values must lie in [0, 1] |
+| `--fdr` | `COLUMN[:CUTOFF]` | 0-based FDR column, optional cutoff. **IPA reads this as a percentage** — see [measurement types](#measurement-types) |
 | `--strip` | `TEXT` | remove TEXT from observation names before shortening. Repeatable |
 | `--no-range-check` | flag | skip the value-range validation |
 | `--list-id-types` | flag | print all 33 gene ID types and exit |
@@ -536,6 +539,29 @@ unaffected.
 `--observation` sets the name explicitly for a single file and is shortened the
 same way if it needs to be.
 
+### The FDR percentage trap
+
+**IPA reads `falsediscovery` as a percentage in [0, 100].** Statistical
+software emits q-values as fractions in [0, 1]. Both are inside the accepted
+range, so nothing is rejected and nothing is discarded — a q-value of `0.05` is
+simply taken as `0.05%`, a threshold a hundred times stricter than intended, and
+a cutoff applied in IPA silently keeps far less than you meant.
+
+This is the one measurement type where the range check cannot help, because the
+wrong scale is a legitimate value. So `ipaapi` warns on the shape of the
+distribution instead — if every value in an `--fdr` column is at or below 1:
+
+```
+Warning: column 'Q_value' is declared 'falsediscovery' and every one of its
+2,338 values is <= 1. IPA reads this type as a PERCENTAGE in [0, 100], so 0.05
+means 0.05%, not 5%. If these are ordinary q-values, multiply the column by 100
+before submitting -- IPA accepts them either way and cannot tell the difference,
+so nothing will be rejected.
+```
+
+Multiply the column by 100, or pass the cutoff on IPA's scale and accept that
+the stored values are hundredths.
+
 ### The reference set
 
 The background enrichment is scored against — the denominator of the Fisher's
@@ -653,6 +679,33 @@ Browser-based OAuth 2.0 with PKCE. Your password never reaches this package.
 Whichever account you log in as owns the datasets and projects.
 
 The client ID is the public one any IPA user may use — it is not a secret.
+
+### Signing in on its own
+
+```bash
+ipaapi login
+```
+
+Authenticates and caches a token without submitting anything, which is the only
+way to check that credentials work without spending analysis allowance finding
+out. It reports where the token went, when it expires, and whether a refresh
+token was issued:
+
+```
+Signed in.
+  token cache: /home/you/.cache/ipaapi/tokens.json
+  expires in 11h 58m (at 2026-09-11 06:12:44)
+  a refresh token was issued, so the next command should not need the browser
+```
+
+`--force` signs in again even when a valid token is cached. `--forget` clears
+the cache. `--no-browser` prints the URL rather than opening one.
+
+Worth running before a long batch, so a token cannot expire mid-run.
+
+There is deliberately no `--client-id` or `--host`. The cache is keyed on those,
+so a login under a different key would be invisible to every other command — a
+login that appears to work and changes nothing.
 
 ### Token caching and refresh
 
@@ -788,7 +841,9 @@ cp, ur, df = results                  # unpacks like the demo's ipa_results()
 | `IPA appears to be down or having trouble` | IPA outage — **or a duplicate dataset name, or a long observation name**, all reported identically | `ipaapi --version` (1.2.0+ handles the name length); check `ipaapi history --project X` for the dataset name; otherwise wait |
 | Batch dies on the first file, names come from long filenames | observation name too long | upgrade to 1.2.0+, or pass a short `--observation` |
 | Batch dies on the *first* file after an earlier run | dataset names already exist in the project | expected — 1.1.0 skips them automatically; before that, use a new `--project` |
-| `Cannot listen on 127.0.0.1:8000` | stale login process, or another user mid-login | `ss -ltnp 'sport = :8000'`, then kill it if it's yours |
+| `Cannot listen on 127.0.0.1:8000` | stale login process, or another user mid-login | the message names the PID and prints the `kill` command |
+| `the request timed out before IPA answered` | over-long observation name, or a slow link/VPN | upgrade to 1.2.0+; the file may have been created anyway |
+| FDR cutoff keeps far fewer genes than expected | q-values given as fractions, read as percentages | multiply the `--fdr` column by 100 |
 | Login prompt on every run | token cache not writable | `export IPAAPI_TOKEN_FILE=...`; check for a root-owned cache |
 | `Could not open a browser automatically` | headless | `ssh -X`, or copy a token across |
 | `report` returns HTTP 500 on a succeeded analysis | unconfirmed; possibly add-on licence | open the analysis in IPA; see `examples/probe_interpret.py` |
@@ -905,7 +960,7 @@ Tests are fully offline; none of them contact IPA.
 
 ## Status
 
-**1.0** — stable and in production use against live IPA. The command line and
+**1.3** — stable and in production use against live IPA. The command line and
 the Python API are settled; breaking changes from here mean a major version
 bump. See `CHANGELOG.md`.
 

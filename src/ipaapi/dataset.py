@@ -230,6 +230,43 @@ class Dataset:
                     "log ratios they are interpreted as 2^value, inflating every "
                     "magnitude."
                 )
+
+        notes.extend(self._false_discovery_scale_warnings())
+        return notes
+
+    def _false_discovery_scale_warnings(self) -> list:
+        """Warn when an FDR column looks like a fraction rather than a percent.
+
+        IPA reads ``falsediscovery`` as a **percentage** in [0, 100]. Statistical
+        software almost universally emits q-values as fractions in [0, 1]. Both
+        are inside the accepted range, so nothing is rejected and nothing is
+        discarded -- a q-value of 0.05 is simply taken as 0.05%, a threshold two
+        orders of magnitude stricter than intended, and any cutoff applied in
+        IPA silently keeps far less than expected.
+
+        This is the one measurement type where the range check cannot help,
+        because the wrong scale is a valid value. Hence a warning on the shape
+        of the distribution instead.
+        """
+        import pandas as pd
+
+        notes = []
+        for obs in self.mapping.observations:
+            for m in obs.measurements:
+                if m.type is not MeasurementType.FALSE_DISCOVERY:
+                    continue
+                values = pd.to_numeric(self.frame[m.column], errors="coerce").dropna()
+                if values.empty or (values > 1).any():
+                    continue  # already on a percentage scale, or nothing to judge
+                notes.append(
+                    f"column {m.column!r} is declared "
+                    f"{MeasurementType.FALSE_DISCOVERY.value!r} and every one of its "
+                    f"{len(values):,} values is <= 1. IPA reads this type as a "
+                    "PERCENTAGE in [0, 100], so 0.05 means 0.05%, not 5%. If these "
+                    "are ordinary q-values, multiply the column by 100 before "
+                    "submitting -- IPA accepts them either way and cannot tell the "
+                    "difference, so nothing will be rejected."
+                )
         return notes
 
     @property
