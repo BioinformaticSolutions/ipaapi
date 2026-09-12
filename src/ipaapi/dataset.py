@@ -19,11 +19,35 @@ __all__ = ["Dataset", "load_table"]
 PathLike = Union[str, "os.PathLike[str]"]
 
 
-def _sniff_separator(path: PathLike, default: str = "\t", skip_rows: int = 0) -> str:
-    """Guess the delimiter from the header line.
+#: Delimiters considered, in the order they are preferred on a tie.
+_DELIMITERS = ("\t", ",", ";", "|")
 
-    *skip_rows* lines of preamble are stepped over first, so a comment or title
-    line above the header does not get sniffed by mistake.
+#: How many lines past the header to read when deciding the delimiter.
+_SNIFF_LINES = 8
+
+
+def _sniff_separator(path: PathLike, default: str = "\t", skip_rows: int = 0) -> str:
+    """Delimiter only. See :func:`_sniff` for the confidence flag."""
+    return _sniff(path, default=default, skip_rows=skip_rows)[0]
+
+
+def _sniff(path: PathLike, default: str = "\t", skip_rows: int = 0):
+    """Guess the delimiter from the header AND the rows beneath it.
+
+    This used to look at the header line alone, which is not enough evidence.
+    A tab-separated file with a column named ``log2FC, shrunken`` sniffs as CSV,
+    splits into two columns whose names contain literal tabs, and then passes
+    every downstream guard: the header check sees two columns and no comment
+    prefix, and the value column parses as entirely non-numeric. The CLI
+    resolves ``--ID 0`` and ``--FC 1`` positionally onto the wreckage and IPA
+    receives unmappable identifiers and no measurements, silently.
+
+    A delimiter that is real splits the header and the data rows into the *same*
+    number of fields. One that is an accident of punctuation inside a single
+    cell does not. So each candidate is scored on agreement across several
+    lines, and the header alone is only consulted if nothing agrees.
+
+    *skip_rows* lines of preamble are stepped over first.
     """
     try:
         with open(path, "r", newline="", encoding="utf-8-sig", errors="replace") as fh:
@@ -33,15 +57,43 @@ def _sniff_separator(path: PathLike, default: str = "\t", skip_rows: int = 0) ->
                         f"{str(path)!r} has fewer than {skip_rows + 1} lines, so there "
                         "is no header row left after --skip-rows."
                     )
-            sample = fh.readline()
+            lines = []
+            for _ in range(_SNIFF_LINES):
+                line = fh.readline()
+                if line == "":
+                    break
+                if line.strip():
+                    lines.append(line)
     except OSError as exc:
         raise MappingError(f"Could not read {str(path)!r}: {exc}") from exc
-    if not sample:
+    if not lines:
         raise MappingError(f"{str(path)!r} appears to be empty.")
+
+    header, body = lines[0], lines[1:]
+
+    best = None
+    for candidate in _DELIMITERS:
+        counts = [len(next(csv.reader([ln], delimiter=candidate))) for ln in lines]
+        if counts[0] < 2:
+            continue                       # does not split the header at all
+        if len(set(counts)) != 1:
+            continue                       # header and data disagree: not it
+        # More real columns is better evidence; ties go to _DELIMITERS order.
+        if best is None or counts[0] > best[1]:
+            best = (candidate, counts[0])
+    if best is not None:
+        return best[0], True
+
+    # Nothing agreed across lines -- a one-line file, ragged data, or a comment
+    # line sitting where the header should be. Fall back to the old header-only
+    # guess rather than refusing to read the file, but say it was a guess: the
+    # header checks below treat an agreed delimiter as evidence and a guessed
+    # one as no evidence at all.
     try:
-        return csv.Sniffer().sniff(sample, delimiters="\t,;|").delimiter
+        guess = csv.Sniffer().sniff(header, delimiters="".join(_DELIMITERS)).delimiter
     except csv.Error:
-        return default
+        guess = default
+    return guess, False
 
 
 def load_table(
@@ -67,8 +119,11 @@ def load_table(
 
     if skip_rows < 0:
         raise MappingError("skip_rows cannot be negative.")
+    agreed = False
     if sep is None:
-        sep = _sniff_separator(path, skip_rows=skip_rows)
+        sep, agreed = _sniff(path, skip_rows=skip_rows)
+    else:
+        agreed = True          # the caller asserted it; trust them
     read_csv_kwargs.setdefault("dtype", object)
     read_csv_kwargs.setdefault("encoding", "utf-8-sig")
     if skip_rows:
@@ -80,7 +135,7 @@ def load_table(
     frame.columns = [str(c).strip() for c in frame.columns]
 
     if not skip_rows:
-        _warn_if_header_looks_wrong(path, frame)
+        _warn_if_header_looks_wrong(path, frame, delimiter_agreed=agreed)
     return frame
 
 
@@ -88,7 +143,9 @@ def load_table(
 _COMMENT_PREFIXES = ("#", "//", ";", "!")
 
 
-def _warn_if_header_looks_wrong(path: PathLike, frame: "pd.DataFrame") -> None:
+def _warn_if_header_looks_wrong(
+    path: PathLike, frame: "pd.DataFrame", delimiter_agreed: bool = False
+) -> None:
     """Raise if the row taken as the header is obviously not one.
 
     A comment or title line above the real header is common, and the failure is
@@ -100,6 +157,19 @@ def _warn_if_header_looks_wrong(path: PathLike, frame: "pd.DataFrame") -> None:
     single_column = len(frame.columns) == 1
 
     if not (looks_like_comment or single_column):
+        return
+
+    # A '#' in front of a real header row is a convention, not a comment --
+    # bedtools, MACS and several aligners all write '#Chrom<TAB>Start'. The
+    # discriminator is whether the delimiter was AGREED across the header and
+    # the rows beneath it: a real header splits the whole file consistently,
+    # while a prose comment only splits because it happens to contain a comma.
+    # Without that agreement this stays an error, because the old advice is
+    # destructive here -- --skip-rows 1 promotes the first DATA row to header.
+    if looks_like_comment and not single_column and delimiter_agreed:
+        frame.columns = [str(frame.columns[0]).lstrip("#/;! ").strip()] + [
+            str(c) for c in frame.columns[1:]
+        ]
         return
 
     reason = (
@@ -267,6 +337,14 @@ class Dataset:
                     "submitting -- IPA accepts them either way and cannot tell the "
                     "difference, so nothing will be rejected."
                 )
+                if m.cutoff is not None and m.cutoff <= 1:
+                    notes[-1] += (
+                        f"\n    The cutoff on this column is {m.cutoff:g}, which is on "
+                        "that same percentage scale and is NOT converted for you. If "
+                        "you scale the column, scale the cutoff with it -- a column "
+                        "multiplied by 100 against an unchanged cutoff filters 100x "
+                        "more strictly than intended, and just as silently."
+                    )
         return notes
 
     @property

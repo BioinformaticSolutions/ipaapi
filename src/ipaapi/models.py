@@ -91,9 +91,21 @@ class MeasurementType(str, Enum):
         return _RANGES[self]
 
     def is_plausible(self, value: float) -> bool:
-        """Return whether *value* falls inside this type's accepted range."""
+        """Return whether *value* falls inside this type's accepted range.
+
+        Infinities are rejected for every type. They used to pass: `inf >= 1`
+        satisfies fold change, `logratio` and `other` are unbounded, and the
+        upper bound of `ratio` and `intensity` is itself `inf`. IPA cannot read
+        the text "Inf" as a number, and DESeq2 and edgeR emit it whenever a
+        group has zero counts, so an ordinary differential expression table
+        could clear this check and be scored on a fraction of its rows.
+        """
         if value != value:  # NaN is always allowed; IPA treats it as missing.
             return True
+        if value in (_INF, -_INF):
+            return False
+        if self in _DISCRETE:
+            return float(value) in _DISCRETE[self]
         if self is MeasurementType.FOLD_CHANGE:
             return value >= 1.0 or value <= -1.0
         bounds = self.valid_range
@@ -126,6 +138,14 @@ _RANGES = {
     MeasurementType.OTHER: None,
     MeasurementType.GAIN_LOSS: (-2.0, 2.0),
     MeasurementType.CLASSIFICATION: (-2.0, 2.0),
+}
+
+#: Types IPA reads as a small set of codes rather than a continuous scale.
+#: Checking these only against (-2, 2) let a continuous copy-number log ratio
+#: through, which IPA then discards without comment.
+_DISCRETE = {
+    MeasurementType.GAIN_LOSS: frozenset({-2.0, -1.0, 0.0, 1.0, 2.0}),
+    MeasurementType.CLASSIFICATION: frozenset({-2.0, -1.0, 0.0, 1.0, 2.0}),
 }
 
 

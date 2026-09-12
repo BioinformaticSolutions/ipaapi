@@ -382,16 +382,73 @@ class ColumnMapping:
                 + ", ".join(repr(c) for c in repeated)
             )
 
+        # A label appearing twice in the FRAME is a different problem, and a
+        # worse one. frame.loc[:, cols] returns one column per match, so the
+        # row handed to the payload builder grows while the slot cycling keeps
+        # its period -- every value after the duplicate lands in the wrong
+        # measurement slot, and one observation receives another's p-values as
+        # its fold changes. Nothing downstream can detect that, so refuse here.
+        duplicated_labels = sorted(
+            {c for c in used if list(available).count(c) > 1}
+        )
+        if duplicated_labels:
+            raise MappingError(
+                "These column names appear more than once in the dataset: "
+                + ", ".join(repr(c) for c in duplicated_labels)
+                + ". A repeated name cannot be addressed unambiguously, and "
+                "submitting anyway would shift values into the wrong "
+                "measurement slots. Rename the duplicates, or drop the ones "
+                "you do not need, before submitting."
+            )
+
         if check_ranges:
             self._check_ranges(frame)
 
     def _check_ranges(self, frame: "pd.DataFrame") -> None:
+        """Check every value column against its declared measurement type.
+
+        Two distinct failures are reported, and the first used to be invisible.
+
+        *Unparseable* cells -- text where a number belongs -- were coerced to
+        NaN and dropped before the range test, and a column that was entirely
+        text produced an empty series and was skipped outright. So a ``--FC``
+        pointing one column off, at gene symbols, validated clean and uploaded
+        ``TP53`` as a fold change. IPA discards what it cannot read, without
+        comment, which is exactly the silent failure this method exists to
+        prevent. Blank cells are still fine: those are honest missing values.
+
+        *Out-of-range* values are the original check, now including infinities.
+        """
         import pandas as pd
 
         problems: List[str] = []
         for obs in self.observations:
             for m in obs.measurements:
-                series = pd.to_numeric(frame[m.column], errors="coerce").dropna()
+                raw = frame[m.column]
+                numeric = pd.to_numeric(raw, errors="coerce")
+                blank = raw.map(is_blank)
+                unparsed = numeric.isna() & ~blank
+                n_unparsed = int(unparsed.sum())
+                if n_unparsed:
+                    sample = ", ".join(
+                        repr(str(v)) for v in raw[unparsed].tolist()[:3]
+                    )
+                    problems.append(
+                        f"column {m.column!r} (observation {obs.name!r}) is declared "
+                        f"{m.type.value!r} but {n_unparsed} of its {len(raw)} cell(s) "
+                        f"are not numbers and not blank, e.g. {sample}. IPA discards "
+                        "what it cannot read, so those rows would be scored as "
+                        "though they carried no measurement at all."
+                        + (
+                            "\n    Every cell in the column is unreadable, which "
+                            "usually means the column position is off by one -- "
+                            "check --ID and --FC against the header."
+                            if n_unparsed == int((~blank).sum())
+                            else ""
+                        )
+                    )
+
+                series = numeric.dropna()
                 if series.empty:
                     continue
                 bad = [v for v in series.tolist() if not m.type.is_plausible(float(v))]
@@ -402,6 +459,13 @@ class ColumnMapping:
                         f"{m.type.value!r} but holds {len(bad)} out-of-range value(s), "
                         f"e.g. {sample}"
                     )
+                    if any(v in (float("inf"), float("-inf")) for v in bad):
+                        note += (
+                            "\n    Some of those are infinite. DESeq2 and edgeR write "
+                            "Inf where one group has zero counts; IPA cannot read it "
+                            "and drops the row. Replace them with a finite bound, or "
+                            "blank them out so they are honestly missing."
+                        )
                     note += _type_hint(m.type, bad, len(series))
                     problems.append(note)
         if problems:

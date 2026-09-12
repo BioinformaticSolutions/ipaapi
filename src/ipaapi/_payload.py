@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterator, List, Optional, Tuple
 from urllib.parse import urlencode
 
-from .mapping import ColumnMapping
+from .mapping import ColumnMapping, is_blank
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
@@ -48,6 +48,18 @@ __all__ = ["build_submission_pairs", "encode_submission"]
 Pair = Tuple[str, str]
 
 _MISSING = "NaN"
+
+
+def _format_number(value: float) -> str:
+    """Render a cutoff without losing precision.
+
+    ``%g`` keeps six significant digits, which silently rounds an intensity
+    cutoff like 1234567 to ``1.23457e+06``. ``repr`` gives the shortest string
+    that round-trips, and trims a pointless trailing ``.0``.
+    """
+    if float(value).is_integer():
+        return str(int(value))
+    return repr(float(value))
 
 
 def _slot_key(base: str, index: int) -> str:
@@ -69,15 +81,32 @@ def _value_key(slot_index: int) -> str:
 
 
 def _format(value) -> str:
-    """Render a cell as IPA expects, mapping missing values to ``NaN``."""
-    if value is None:
+    """Render a cell as IPA expects, mapping missing values to ``NaN``.
+
+    The missing-value vocabulary is :data:`ipaapi.mapping._BLANK_TOKENS`, shared
+    with identifier handling. It used to be a second, shorter list here, so
+    ``-`` and ``.`` -- both declared missing-value spellings, and neither
+    treated as NA by pandas -- were counted as blank for an identifier and then
+    sent to IPA as a literal expression value.
+    """
+    if is_blank(value):
         return _MISSING
-    if isinstance(value, float) and value != value:
+    return str(value).strip()
+
+
+def _format_id(value) -> str:
+    """Render an identifier, without the ``.0`` a float column would add.
+
+    One blank cell promotes an int64 Entrez column to float64, and every
+    identifier in the file then renders as ``7157.0``, which maps to nothing.
+    The CLI reads with ``dtype=object`` and never sees this; a caller handing
+    :meth:`Dataset.from_frame` their own frame does.
+    """
+    if is_blank(value):
         return _MISSING
-    text = str(value).strip()
-    if text == "" or text.lower() in {"na", "nan", "none", "null"}:
-        return _MISSING
-    return text
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 def build_submission_pairs(
@@ -129,7 +158,7 @@ def build_submission_pairs(
 
     for k, cutoff in enumerate(mapping.cutoffs):
         if cutoff is not None:
-            pairs.append((_slot_key("cutoff", k), f"{cutoff:g}"))
+            pairs.append((_slot_key("cutoff", k), _format_number(cutoff)))
 
     # Identifiers may be coalesced from a fallback column; values are taken in
     # canonical submission order. itertuples keeps this workable on large files.
@@ -138,7 +167,7 @@ def build_submission_pairs(
     n_slots = len(types)
 
     for gene_id, row in zip(gene_ids.tolist(), values.itertuples(index=False, name=None)):
-        pairs.append(("geneid", _format(gene_id)))
+        pairs.append(("geneid", _format_id(gene_id)))
         for offset, value in enumerate(row):
             pairs.append((_value_key(offset % n_slots), _format(value)))
 
