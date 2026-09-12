@@ -9,71 +9,218 @@ the install location, and whether it's an editable checkout rather than a wheel.
 
 ## Unreleased
 
-Found by reading the package end to end, not by hitting them in use. Each was
-reproduced before being written down. Nothing here is released yet; these are
-held for the next version rather than spent one at a time on patch releases.
+Found by reading the package end to end three times rather than by hitting them
+in use. Every item below was reproduced before being written down. Held
+together for one release instead of being spent a version number at a time.
 
-### Bugs
+### Wrong data reaches IPA, silently
 
-- **Non-finite values pass validation and are transmitted as text.**
+These are the failure the package exists to prevent: IPA accepts the
+submission, reports success, and scores an analysis on data that is not what
+was meant.
+
+- **Non-finite values clear the range check and are sent as text.**
   `is_plausible` returns True for `inf` under `foldchange` (`inf >= 1`),
   `logratio` and `other` (unbounded), and `ratio` and `intensity` (upper bound
-  is `inf`, and `inf <= inf`). A column holding `Inf` therefore clears
-  `--no-range-check`'s opposite -- the check that is supposed to catch exactly
-  this -- and `_format` hands IPA the literal string `Inf`. DESeq2 and edgeR
-  emit `Inf`/`-Inf` log fold changes whenever one group has zero counts, so
-  this is ordinary output, not a corner case. IPA cannot read it as a number
-  and will either reject the submission behind its unhelpful outage page or
-  drop those rows silently. Reject non-finite values in `_check_ranges`, naming
-  the rows.
+  is `inf`). `_format` then hands IPA the literal string `Inf`. DESeq2 and
+  edgeR emit `Inf`/`-Inf` whenever a group has zero counts, so this is ordinary
+  output. Reject non-finite values in `_check_ranges`, naming the rows.
 
-- **The quota classifier fires on any body containing "exceeded" or "limit
-  reached".** `looks_like_quota` is checked first in `_raise_submission_error`,
-  so it wins over every other branch. Bodies like "Maximum upload size
-  exceeded" and "Observation name length exceeded the maximum permitted" both
-  raise `QuotaExceededError`. The consequences compound: `cmd_submit` treats
-  quota as "the file is fine, IPA is busy", so it breaks out of the loop,
-  leaves that file and every file after it in place, and prints that the
-  allowance is exhausted. The file is never quarantined into `failed/`, and the
-  next run fails on it identically -- a permanent per-file error becomes an
-  unbounded retry loop wearing the wrong diagnosis. Require the confirmed
-  wording, or pair the generic words with an analysis-related noun.
+- **The range check silently ignores every cell it cannot parse.**
+  `_check_ranges` does `pd.to_numeric(..., errors="coerce").dropna()`, so
+  non-numeric cells are discarded *before* the plausibility test and an
+  entirely non-numeric column produces an empty series and is skipped. A `--FC`
+  off by one column validates clean and uploads gene symbols as fold changes:
+  `sent: ['TP53', 'BRCA1']`. Excel artefacts and European decimals do the same:
+  `sent: ['2.0', '#DIV/0!', '1,5']`. Count what could not be parsed and refuse
+  a column that is mostly or entirely unparseable.
 
-- **The gateway-timeout pattern matches a bare 502 or 504 anywhere in the
-  body.** `\b50[24]\b` in `_GATEWAY_TIMEOUT` matches "Unable to run analysis:
-  504 identifiers could not be mapped", and since the timeout branch is checked
-  before the `Unable to run analysis` branch, a genuine refusal is reported as
-  a timeout with the message "your command and your data are almost certainly
-  fine". Narrower than it first looks -- `504px` and `Sample_504_x` do not
-  match, because the boundary needs a non-word character -- but a count or an
-  index rendered as a bare number does. Restrict the numeric alternative to the
-  status-code position, or drop it and rely on the status code and the phrases.
+- **The delimiter is sniffed from the header line alone, so one comma in a
+  column name shreds a TSV.** A tab-separated file whose header reads
+  `Gene ID<TAB>log2FC, shrunken<TAB>p-value` parses as two columns named
+  `'Gene ID\tlog2FC'` and `'shrunken\tp-value'`. `_warn_if_header_looks_wrong`
+  does not fire (two columns, no comment prefix), the CLI resolves `--ID 0` and
+  `--FC 1` positionally onto the mangled names, the all-NaN value column hits
+  the skip path above, and IPA receives unmappable identifiers and no
+  measurements. Sniff over several lines and require a consistent field count.
 
-- **The token cache is world-readable while the token is in it.**
-  `TokenCache.put` opens the temp file with `open(tmp, "w")`, writes the access
-  and refresh tokens, and only then calls `os.chmod(..., 0600)`. Measured: the
-  file exists at 0644 with the token in it before the chmod lands. The final
-  file is 0600, so the docstring's claim is true of the result and not of the
-  path taken to it. It matters on exactly the machine this tool is built for --
-  a shared analysis server. Create it with `os.open(..., O_CREAT | O_EXCL,
-  0o600)` instead.
+- **Duplicate column labels in the frame shift every value into the wrong
+  measurement slot.** `frame.loc[:, value_columns]` returns one column per
+  match, so a repeated header lengthens the row while `offset % n_slots` keeps
+  cycling. With two observations of (fold change, p-value) and `FC_A` appearing
+  twice, observation B receives a p-value in its fold-change slot and a fold
+  change in its p-value slot. `validate()` checks the mapping for repeats but
+  never the frame. Reject duplicate labels among the mapped columns.
 
-- **The FDR percentage warning does not mention the cutoff.** The warning added
-  in 1.3.0 tells the user to multiply the column by 100, which is right. But
-  `--fdr COLUMN:CUTOFF` sends the cutoff on the same percentage scale and it is
-  not multiplied. A user who follows the advice ends up with the column on the
-  percent scale and the cutoff still a fraction -- 100x stricter than intended,
-  and silently so, which is the failure the warning exists to prevent. Say so
-  in the warning, and warn when an `--fdr` cutoff is <= 1.
+- **`-` and `.` are sent as expression values.** `mapping._BLANK_TOKENS`
+  declares them missing-value spellings and honours them for identifiers;
+  `_payload._MISSING` does not list them, and pandas does not treat them as NA.
+  Common in microarray and proteomics exports. Share one vocabulary.
 
-### Also
+- **A float-typed identifier column uploads as `7157.0`.** One blank cell
+  promotes an int64 Entrez column to float and every identifier gains `.0`, so
+  nothing maps. The CLI forces `dtype=object` and is safe; `Dataset.from_frame`
+  with a caller's own frame is a documented entry point and is not.
+
+- **`gain_loss` and `classification` are range-checked as continuous.**
+  `_RANGES` gives both `(-2, 2)` while the README documents them as the
+  discrete set -2, -1, 0, 1, 2, so a continuous copy-number log ratio passes
+  validation and is then discarded by IPA without comment.
+
+### Errors are misclassified, and the batch acts on the wrong diagnosis
+
+- **The quota classifier fires on the bare word "exceeded" or "limit
+  reached".** It is checked first in `_raise_submission_error`, so it wins over
+  every other branch: "Maximum upload size exceeded" and "Observation name
+  length exceeded the maximum permitted" both raise `QuotaExceededError`.
+  `cmd_submit` reads quota as "the file is fine, IPA is busy", breaks out of
+  the loop, leaves that file and every file after it in place, and reports an
+  exhausted allowance. The file is never quarantined, so the next run repeats
+  it -- a permanent per-file error becomes an unbounded retry loop wearing the
+  wrong diagnosis. Require the confirmed wording.
+
+- **A bare 502 or 504 anywhere in the body reads as a gateway timeout.**
+  `\b50[24]\b` matches "Unable to run analysis: 504 identifiers could not be
+  mapped", and the timeout branch is checked before the refusal branch, so a
+  genuine refusal is reported with "your command and your data are almost
+  certainly fine". Narrower than it looks -- `504px` and `Sample_504_x` do not
+  match -- but a count rendered as a bare number does.
+
+- **`status()` accepts any HTTP-200 body.** `AnalysisStatus.from_code` returns
+  `IN_PROGRESS` for anything that is not exactly 3, 4 or 5, and this package
+  documents elsewhere that IPA delivers its errors inside HTTP 200. So an error
+  page reads as "still running": `wait_for` polls out its whole hour and then
+  reports `in_progress`, which reads as a stuck analysis rather than "we never
+  got a valid answer".
+
+### The CLI reports success it did not have
+
+- **`submit` exits 0 after quarantining files into `failed/`.** Validation
+  failures are printed and filed but never added to `failures`, which is the
+  only thing the exit code consults. Reproduced: one broken file of three,
+  `failed/` contains it, `EXIT CODE: 0`. A cron or Snakemake wrapper checking
+  `$?` sees success. `submit --dry-run` has the same hole and exits 0 where
+  `validate` on the same directory exits 1.
+
+- **An interrupted batch loses the IDs of analyses IPA has already accepted.**
+  `triage.mark_submitted()` runs per file inside the loop; `history.append()`
+  runs once after it. Ctrl-C on file two of a batch leaves file one filed under
+  `submitted/` -- so a re-run will not resubmit it -- with no log written and
+  its analysis ID only in the scrollback. That is precisely the loss the
+  history module was written to prevent, and its docstring claims a line is
+  appended at a time. Append per file.
+
+- **`--recursive` descends into hidden directories.** The dot-check looks only
+  at the filename, so `.ipynb_checkpoints/x-checkpoint.txt` -- a stale copy of
+  a real file -- is submitted as an extra analysis, burning allowance, and then
+  filed into `submitted/`.
+
+- **Observation names can collide after the final trim.** Every earlier
+  shortening step is guarded by `_usable`, whose job is to keep names distinct.
+  `trim_name` is applied unconditionally and never re-checked, and it drops the
+  middle. Two files differing only in the middle collide once a third,
+  unrelated file in the batch defeats the shared-affix stripping that would
+  otherwise have saved them -- an ordinary state for a directory. Both analyses
+  then land in IPA with identical `obs1name`, which is what breaks a comparison
+  analysis.
+
+- **`status` and `report` abort on the first bad analysis ID.** The call is
+  unguarded, so one stale ID means every ID after it goes unchecked --
+  including in the `ipaapi status <every id>` line `submit` itself prints.
+  `history` guards the identical call.
+
+- **`trim_name` can reduce a name to two characters.** The `name[:limit]`
+  fallback fires only when head *and* tail are empty, so a long unbroken token
+  followed by a short one yields `..rep` or `..v2`. `MIN_STRIPPED_NAME` is not
+  applied here. Common for GEO-derived, camelCase filenames.
+
+- **The cutoff token pattern matches any bare integer, and `p53`.** The decimal
+  point is optional in `^(p|q|padj|fdr|adj|log2fc|fc|lfc)?[0-9]*\.?[0-9]+$`, so
+  `p53`, `q30`, `fc2`, `10` and `100` all read as statistical cutoffs and are
+  dropped as disposable. A dose of 10 versus 100, or a `_p53` subset, is
+  removed from the observation name while the batch stays distinct for another
+  reason, so `_usable` never objects.
+
+### Hangs, crashes and lost state
+
+- **`login()` hangs forever despite its timeout.** `_CallbackServer` is a
+  single-threaded `HTTPServer` with no handler timeout, so one connection that
+  never completes a request blocks the loop in `rfile.readline()`. The real
+  redirect is then never processed, and `server.shutdown()` in the `finally`
+  waits for `serve_forever` to exit and never returns -- so the
+  `AuthenticationError` the timeout raised is never delivered and the process
+  sits silent. Verified: at 10s, with `timeout=2.0`, the main thread is in
+  `socketserver.shutdown()` at auth.py:648. A browser preconnecting to
+  localhost:8000, or any security agent probing loopback, is enough.
+  `ThreadingHTTPServer` plus a handler timeout fixes both halves. This is the
+  headline feature of 1.3.0.
+
+- **Concurrent logins lose tokens, and blame the wrong thing.**
+  `TokenCache.put` writes to a fixed `<path>.tmp`, so two processes race: one
+  `os.replace` finds the temp file already renamed away, the entry is lost, and
+  the handler tells the user their cache location is unwritable and to set
+  `IPAAPI_TOKEN_FILE`. With three workers over a 40-entry cache the file went
+  from 37,780 to 2,823 bytes. Any parallel batch triggers it, which is the
+  workflow this package is for. Use `tempfile.mkstemp` in the same directory.
+
+- **The token cache is world-readable while the token is in it.** `put` opens
+  the temp file with `open(tmp, "w")`, writes the access and refresh tokens,
+  and only then chmods to 0600. Measured at 0644 mid-write. Matters on exactly
+  the machine this tool is built for. Create it with
+  `os.open(..., O_CREAT | O_EXCL, 0o600)`.
+
+- **One non-UTF-8 byte in the log blocks `submit` entirely.** `history.read`
+  catches only `OSError`, but `UnicodeDecodeError` is a `ValueError`, and
+  `_already_submitted` calls `read` for every dataset on the normal submit
+  path. A row written by Excel's tab-delimited export on Windows is enough --
+  and the module markets the file as spreadsheet-readable. Logging is supposed
+  to be best-effort; here it is load-bearing.
+
+- **A truncated final row crashes `ipaapi history`.** `csv.DictReader` fills
+  missing keys with `None`, `.get(key, "")` returns that `None` because the key
+  exists, and the column-width computation raises
+  `TypeError: object of type 'NoneType' has no len()`. An interrupted write or
+  a full disk leaves exactly that.
+
+- **`Triage.summary()` reports files as moved when the move failed.** The lists
+  are appended to before `_move` is attempted, and `_move` returns `None` on
+  failure. On a read-only input directory the run prints two warnings saying
+  the files were left in place and then "2 file(s) moved to submitted/". The
+  summary is the run's verdict on what still needs doing.
+
+- **A corrupt `expires_at` raises instead of reading as a cache miss.** The
+  `try/except` covers `Credentials.from_dict` but `is_expired` is evaluated
+  outside it, so a string or list there gives a `TypeError`. The docstring
+  promises a corrupt cache is treated as a miss.
+
+### Smaller
 
 - `auth.py` tells a user with a missing dependency to run
-  `pip install requests-oauthlib`. A bare `pip` does not exist on macOS or most
+  `pip install requests-oauthlib`; a bare `pip` does not exist on macOS or most
   Linux distributions, and this branch is reached precisely when the
   environment is already confused about what is installed where. Use
-  `sys.executable`. The sibling raise on the refresh path gives no remedy at
-  all.
+  `sys.executable`. The sibling raise on the refresh path offers no remedy.
+- The FDR percentage warning says to multiply the column by 100 but does not
+  say that `--fdr`'s cutoff is on the same scale and is not multiplied, so
+  following the advice makes filtering 100x stricter, silently.
+- Entity names are run through `value.replace("+", " ")`, so `NAD+ Signaling`
+  becomes `NAD  Signaling`.
+- Passing your own `requests.Session` silently discards your adapters; the
+  docstring advertises it as the way to bring your own configuration.
+- `--help` appends `(default: None)` after help text that already states a
+  different default, for `--pattern`, `--observation` and `--log-file`.
+- `history --limit 0` means no limit, because 0 is falsy; negative values slice
+  from the front.
+- Timestamps are written with a local UTC offset and compared lexicographically,
+  so `--since` returns the wrong rows across a clock change, or permanently when
+  two machines in different zones share one log.
+- Cutoffs are rendered with `%g`, i.e. six significant digits.
+- `_write_note` overwrites an existing `.error.txt` rather than going through
+  `_unique` as `_move` does; reachable because `TABLE_PATTERNS` matches
+  `*.error.txt` on a later run.
+- A `#`-prefixed header is rejected as a comment, and the `--skip-rows 1` it
+  advises then promotes the first data row to the header.
+- `GatewayTimeoutError` is missing from `errors.__all__`.
 
 ## 1.3.0 — 2026-09-12
 
