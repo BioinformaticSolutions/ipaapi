@@ -58,12 +58,18 @@ def _sniff(path: PathLike, default: str = "\t", skip_rows: int = 0):
                         "is no header row left after --skip-rows."
                     )
             lines = []
-            for _ in range(_SNIFF_LINES):
+            # Count NON-blank lines against the budget. Counting every line
+            # meant a file with nine blank lines above its header read as
+            # empty. The hard cap keeps a file of nothing but blank lines from
+            # being read to the end.
+            for _ in range(_SNIFF_LINES * 20):
                 line = fh.readline()
                 if line == "":
                     break
                 if line.strip():
                     lines.append(line)
+                    if len(lines) >= _SNIFF_LINES:
+                        break
     except OSError as exc:
         raise MappingError(f"Could not read {str(path)!r}: {exc}") from exc
     if not lines:
@@ -143,6 +149,26 @@ def load_table(
 _COMMENT_PREFIXES = ("#", "//", ";", "!")
 
 
+def _looks_like_field_names(columns) -> bool:
+    """Whether these read as column headers rather than as a sentence.
+
+    Agreement on the delimiter is not enough on its own: a prose comment like
+    ``# DESeq2 results, liver, run 3`` above a three-column CSV splits into
+    three fields and agrees, so it was being accepted as a header while the
+    real header became data row 0. Field names are short and rarely contain
+    more than a couple of words; a sentence fragment usually does.
+    """
+    names = [str(c).lstrip("#/;! ").strip() for c in columns]
+    if any(not n for n in names):
+        return False
+    # Every field a single token. "DESeq2 results" is two words and so is a
+    # plausible column name, so a word count is not a discriminator; requiring
+    # one token is. It costs a genuine "#Gene ID" header, which then raises the
+    # message below rather than being read -- the safe direction, since the
+    # alternative is silently promoting the real header to data.
+    return all(len(n.split()) == 1 and len(n) <= 40 for n in names)
+
+
 def _warn_if_header_looks_wrong(
     path: PathLike, frame: "pd.DataFrame", delimiter_agreed: bool = False
 ) -> None:
@@ -166,11 +192,21 @@ def _warn_if_header_looks_wrong(
     # while a prose comment only splits because it happens to contain a comma.
     # Without that agreement this stays an error, because the old advice is
     # destructive here -- --skip-rows 1 promotes the first DATA row to header.
-    if looks_like_comment and not single_column and delimiter_agreed:
-        frame.columns = [str(frame.columns[0]).lstrip("#/;! ").strip()] + [
-            str(c) for c in frame.columns[1:]
-        ]
-        return
+    if (
+        looks_like_comment
+        and not single_column
+        and delimiter_agreed
+        and _looks_like_field_names(frame.columns)
+    ):
+        stripped = str(frame.columns[0]).lstrip("#/;! ").strip()
+        rest = [str(c) for c in frame.columns[1:]]
+        # Never manufacture an empty name or a collision that is not in the
+        # file: "#" alone as the first column, or "#Gene ... Gene", would
+        # otherwise surface as a complaint about duplicates the user does not
+        # have.
+        if stripped and stripped not in rest:
+            frame.columns = [stripped] + rest
+            return
 
     reason = (
         f"the header row reads {first!r}, which looks like a comment"
@@ -181,7 +217,11 @@ def _warn_if_header_looks_wrong(
         f"Could not find a header row in {str(path)!r}: {reason}.\n"
         "If the file has comment or title lines above the header, skip them with "
         "--skip-rows N (skip_rows=N from Python). If the delimiter is unusual, "
-        "set it with --sep."
+        "set it with --sep.\n"
+        "If that line IS the header and simply starts with a marker character, "
+        "it is read as one automatically when every field is a single word; "
+        "remove the marker, or the spaces inside the field names, and it will "
+        "be picked up."
     )
 
 

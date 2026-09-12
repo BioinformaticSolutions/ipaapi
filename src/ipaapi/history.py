@@ -69,7 +69,7 @@ class SubmissionRecord:
     """One submitted analysis.
 
     Attributes:
-        timestamp: Local time with UTC offset, ISO 8601, to the second.
+        timestamp: UTC, ISO 8601, to the second.
         analysis_id: The ID IPA returned.
         project: Project the dataset was uploaded into.
         dataset_name: Dataset name as IPA sees it.
@@ -108,13 +108,19 @@ def _now() -> str:
 
 
 def append(
-    records: Sequence[SubmissionRecord], path: Optional[str] = None
+    records: Sequence[SubmissionRecord],
+    path: Optional[str] = None,
+    quiet: bool = False,
 ) -> Optional[str]:
     """Append *records* to the log, creating it with a header if needed.
 
     Returns the path written to, or ``None`` if the write failed. Logging is
     best-effort: a full disk should not lose an analysis that IPA has already
     accepted, so failures are reported and swallowed.
+
+    *quiet* suppresses the failure message. The CLI appends once per file, so
+    an unwritable log would otherwise print the same four-line warning for
+    every file in the batch and bury the run's own output.
     """
     if not records:
         return None
@@ -132,6 +138,8 @@ def append(
                 writer.writerow(record.as_row())
         return path
     except OSError as exc:
+        if quiet:
+            return None
         print(
             f"Warning: could not write the submission log at {path!r} ({exc}).\n"
             "  The analyses were submitted, but their IDs are only in this "
@@ -140,6 +148,26 @@ def append(
             f"export {LOG_FILE_ENV}=$HOME/ipaapi-submissions.tsv"
         )
         return None
+
+
+#: Tried in order. utf-8-sig strips a BOM, which Excel writes and which
+#: otherwise renames the first column '\ufefftimestamp' -- so every timestamp
+#: reads as empty and --since reports a full log as empty. cp1252 is what
+#: Excel's "Save as Text (Tab delimited)" produces on Windows, and decoding it
+#: properly keeps a name like 'Müller_DEG' intact; replacing its bytes would
+#: break the duplicate guard, which matches dataset names exactly.
+_LOG_ENCODINGS = ("utf-8-sig", "cp1252")
+
+
+def _decode(path: str) -> str:
+    for encoding in _LOG_ENCODINGS:
+        try:
+            with open(path, "r", newline="", encoding=encoding) as fh:
+                return fh.read()
+        except UnicodeDecodeError:
+            continue
+    with open(path, "r", newline="", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
 
 
 def read(path: Optional[str] = None) -> List[dict]:
@@ -164,11 +192,15 @@ def read(path: Optional[str] = None) -> List[dict]:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", newline="", encoding="utf-8", errors="replace") as fh:
-            return [
-                {k: ("" if v is None else v) for k, v in row.items() if k is not None}
-                for row in csv.DictReader(fh, delimiter="\t", restval="")
-            ]
+        text = _decode(path)
+        return [
+            {
+                str(k).lstrip("\ufeff"): ("" if v is None else v)
+                for k, v in row.items()
+                if k is not None
+            }
+            for row in csv.DictReader(text.splitlines(), delimiter="\t", restval="")
+        ]
     except (OSError, ValueError, csv.Error) as exc:
         print(
             f"Warning: could not read the submission log at {path!r} ({exc}).\n"

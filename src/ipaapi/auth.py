@@ -301,11 +301,12 @@ class TokenCache:
                 raise
 
     def clear(self) -> None:
-        """Remove the cache file if present."""
-        try:
-            os.remove(self.path)
-        except OSError:
-            pass
+        """Remove the cache file, and the lock beside it, if present."""
+        for target in (self.path, self.path + ".lock"):
+            try:
+                os.remove(target)
+            except OSError:
+                pass
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -322,6 +323,21 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         result = self.server.result  # type: ignore[attr-defined]
 
         if "code" in params or "error" in params:
+            # First redirect wins. result.update() overwrote all four keys
+            # unconditionally, so a restored browser tab replaying an old
+            # authorization -- or any second hit on the redirect URI -- could
+            # replace a good code with a stale one or an error, and login()
+            # re-reads this dict after the event is set. Measured at 21 of 40
+            # trials before the guard.
+            if result.get("code") or result.get("error"):
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(_SUCCESS_PAGE)
+                except OSError:
+                    pass
+                return
             ok = "code" in params
             # Recorded BEFORE the response is written. If writing the page
             # raises -- the tab closed the instant after authorizing --

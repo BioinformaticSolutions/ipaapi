@@ -69,11 +69,29 @@ def _type_hint(declared: MeasurementType, bad_values: list, total: int) -> str:
 
 
 def is_blank(value) -> bool:
-    """Return whether *value* should be treated as a missing identifier."""
+    """Return whether *value* should be treated as a missing value.
+
+    Shared by identifier resolution and by the payload builder, so the two
+    cannot disagree about what counts as missing.
+
+    ``pandas.isna`` is consulted for the NA singletons a nullable dtype
+    produces -- ``pd.NA``, ``pd.NaT``. Those are not ``None`` and not float
+    NaN, and ``str(pd.NA)`` is ``"<NA>"``, so a nullable-string column's
+    genuine blank used to be reported as unreadable text (quoting a cell that
+    appears nowhere in the file) and uploaded to IPA as the literal ``<NA>``.
+    """
     if value is None:
         return True
     if isinstance(value, float) and value != value:  # NaN
         return True
+    try:
+        import pandas as pd
+
+        result = pd.isna(value)
+        if result is True:
+            return True
+    except (ImportError, TypeError, ValueError):
+        pass  # not a scalar pandas understands; fall through to the tokens
     return str(value).strip().lower() in _BLANK_TOKENS
 
 

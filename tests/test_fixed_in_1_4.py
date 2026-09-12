@@ -332,11 +332,205 @@ def test_triage_does_not_claim_a_move_that_failed():
         os.chmod(root, 0o755)
 
 
-def test_an_error_note_never_overwrites_an_existing_one():
+def test_an_error_note_is_never_picked_up_as_input():
+    """The note is output. Re-ingesting one submits it to IPA as a dataset."""
+    root = pathlib.Path(tempfile.mkdtemp())
+    (root / "run.txt").write_text("ID\tFC\ng1\t2.0\n")
+    (root / "run.txt.error.txt").write_text("why it failed last time")
+    found = [p.name for p in cli.discover_files(str(root), None, False)]
+    assert found == ["run.txt"]
+
+
+def test_a_note_always_pairs_with_the_file_it_describes():
+    """An obviously-named note must not describe a different run."""
     root = pathlib.Path(tempfile.mkdtemp())
     (root / "run.txt").write_text("x")
-    (root / "run.txt.error.txt").write_text("PRECIOUS")
-    t = Triage(root)
-    t.mark_failed(root / "run.txt.error.txt", "reason A")
-    t.mark_failed(root / "run.txt", "reason B")
-    assert (root / "failed" / "run.txt.error.txt").read_text() == "PRECIOUS"
+    Triage(root).mark_failed(root / "run.txt", "reason A")
+
+    # The recovery workflow: pull the file back out, fix the command, re-run.
+    (root / "failed" / "run.txt").rename(root / "run.txt")
+    Triage(root).mark_failed(root / "run.txt", "reason B")
+
+    notes = sorted(p.name for p in (root / "failed").glob("*.error.txt"))
+    assert notes == ["run.txt.error.txt"]
+    assert (root / "failed" / "run.txt.error.txt").read_text().strip() == "reason B"
+
+
+# -- second audit round: defects in the first round of fixes -----------------
+
+
+@pytest.mark.parametrize("message", [
+    "Maximum upload size exceeded",
+    "Observation name length exceeded the maximum permitted",
+    "Dataset row limit exceeded",
+])
+def test_a_file_limit_wrapped_in_ipas_own_prefix_is_not_quota(message):
+    """Every IPA refusal arrives as 'Unable to run analysis: ...', which used
+    to supply the word the allowance gate was looking for."""
+    body = f"<html><body>Unable to run analysis: {message}</body></html>"
+    assert not looks_like_quota(200, body)
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("<html><body><h1>504</h1></body></html>", True),
+    ("Received HTTP 504 from the upstream server", True),
+    ("The gateway returned 504.", True),
+    ("Unable to run analysis: 504 identifiers could not be mapped.", False),
+])
+def test_timeout_detection_across_real_shapes(body, expected):
+    assert looks_like_gateway_timeout(200, body) is expected
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("IL-6+Signaling", "IL-6 Signaling"),
+    ("HMGB1+Signaling", "HMGB1 Signaling"),
+    ("p38+MAPK+Signaling", "p38 MAPK Signaling"),
+    ("NAD+ Signaling", "NAD+ Signaling"),
+    ("Ca2+ transport", "Ca2+ transport"),
+])
+def test_a_digit_before_the_plus_still_decodes(name, expected):
+    assert _PLUS_AS_SPACE.sub(" ", name) == expected
+
+
+def test_a_pandas_na_is_missing_not_unreadable():
+    f = pd.DataFrame({"ID": pd.array(["a", "b"], dtype="string"),
+                      "FC": pd.array(["2.0", None], dtype="string")})
+    dataset = Dataset.from_frame(f, one_obs("FC"), name="d")
+    pairs = _payload.build_submission_pairs(f, dataset.mapping, "app", "proj", "ds")
+    assert [v for k, v in pairs if k == "expvalue"] == ["2.0", "NaN"]
+
+
+def test_a_prose_comment_is_still_not_a_header():
+    path = write(
+        "# DESeq2 results, liver, run 3\n"
+        "gene,log2FoldChange,pvalue\nTP53,2.0,0.01\nBRCA1,-3,0.2\n"
+    )
+    with pytest.raises(MappingError, match="--skip-rows"):
+        load_table(path)
+
+
+def test_blank_lines_above_the_header_do_not_read_as_empty():
+    path = write("\n" * 9 + "Gene\tlogFC\nTP53\t2.0\nBRCA1\t-3\n")
+    assert list(load_table(path).columns) == ["Gene", "logFC"]
+
+
+def test_stripping_a_marker_never_invents_a_duplicate():
+    path = write("#Gene\tlogFC\tGene\na\t1\tb\nc\t2\td\n")
+    with pytest.raises(MappingError, match="header row"):
+        load_table(path)
+
+
+def test_two_files_with_one_stem_are_refused_before_upload():
+    """IPA rejects a repeated dataset name, and the stem is the dataset name."""
+    root = pathlib.Path(tempfile.mkdtemp())
+    for sub in ("groupA", "groupB"):
+        (root / sub).mkdir()
+        (root / sub / "Sample_DEG.txt").write_text("ID\tFC\ng1\t2.0\n")
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "submit", str(root), "--project", "P",
+        "--ID", "0:ensembl", "--FC", "1:foldchange", "--recursive",
+    ])
+    with pytest.raises(IPAError, match="same dataset name"):
+        cli._load_datasets(args)
+
+
+def test_the_duplicate_guard_ignores_rows_this_run_wrote():
+    rows = [{"project": "P", "dataset_name": "x", "analysis_id": "1"}]
+    assert cli._already_submitted("P", "x", None, rows=rows) is not None
+    assert cli._already_submitted("P", "y", None, rows=rows) is None
+
+
+def test_a_trim_that_keeps_only_a_suffix_prefers_the_front():
+    for suffix in ("_rep", "_rep1", "_final", "_batch2"):
+        name = "HumanLiverCirrhosisVsHealthyControlDifferentialExpression" + suffix
+        out = cli.observation_names([name])[0]
+        assert out.startswith("HumanLiver"), out
+        assert len(out) <= cli.MAX_OBSERVATION_NAME
+
+
+def test_disambiguation_is_checked_against_every_name_issued():
+    base = "HumanLiverCirrhosisVsHealthyControlDiffExpressionCohortTwo"
+    names = [base + "_1", base + "_2", base + "_10"]
+    out = cli.observation_names(names)
+    assert len(set(out)) == 3
+    assert all(len(n) <= cli.MAX_OBSERVATION_NAME for n in out)
+
+
+def test_since_compares_instants_not_strings():
+    """A log written before 1.4.0 carries a local offset; one written after
+    carries UTC. Compared as text, the older instant sorted later."""
+    path = os.path.join(tempfile.mkdtemp(), "log.tsv")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\t".join(history.FIELDS) + "\n")
+        fh.write("2026-09-12T23:30:00+02:00\tOLD\tp\tds_old\t\t\t\t\n")  # 21:30Z
+        fh.write("2026-09-12T22:00:00+00:00\tNEW\tp\tds_new\t\t\t\t\n")
+    rows = history.read(path)
+    cutoff = cli._parse_since("2026-09-12T21:45")
+    kept = [r["analysis_id"] for r in rows if cli._timestamp_of(r) >= cutoff]
+    assert kept == ["NEW"]
+
+
+def test_an_unreadable_since_is_reported():
+    with pytest.raises(IPAError, match="not a date or time"):
+        cli._parse_since("yesterday")
+
+
+def test_a_bom_does_not_blank_every_timestamp():
+    path = os.path.join(tempfile.mkdtemp(), "bom.tsv")
+    with open(path, "w", encoding="utf-8-sig") as fh:
+        fh.write("\t".join(history.FIELDS) + "\n")
+        fh.write("2026-09-12T22:00:00+00:00\tA1\tp\tds\t\t\t\t\n")
+    assert history.read(path)[0]["timestamp"] == "2026-09-12T22:00:00+00:00"
+
+
+def test_a_cp1252_dataset_name_still_matches_the_guard():
+    path = os.path.join(tempfile.mkdtemp(), "cp.tsv")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\t".join(history.FIELDS) + "\n")
+    with open(path, "ab") as fh:
+        fh.write("2026-09-12T22:00:00+00:00\t1\tP\tM\xfcller_DEG\t\t\t\t\n".encode("cp1252"))
+    assert cli._already_submitted("P", "M\xfcller_DEG", path) is not None
+
+
+def test_a_second_redirect_cannot_replace_a_good_code():
+    from ipaapi.auth import _CallbackHandler
+
+    class FakeServer:
+        def __init__(self):
+            self.result = {"code": "GOOD", "state": "ST", "error": None,
+                           "error_description": None}
+            self.done = __import__("threading").Event()
+
+    handler = _CallbackHandler.__new__(_CallbackHandler)
+    handler.server = FakeServer()
+    handler.path = "/?error=access_denied"
+    handler.send_response = lambda *a, **k: None
+    handler.send_header = lambda *a, **k: None
+    handler.end_headers = lambda: None
+    handler.wfile = type("W", (), {"write": lambda self, b: None})()
+    handler.do_GET()
+    assert handler.server.result["code"] == "GOOD"
+    assert handler.server.result["error"] is None
+
+
+def test_forgetting_the_cache_removes_its_lock():
+    path = os.path.join(tempfile.mkdtemp(), "token.json")
+    cache = TokenCache(path)
+    cache.put("cid", Credentials("t"))
+    cache.clear()
+    assert not os.path.exists(path)
+    assert not os.path.exists(path + ".lock")
+
+
+def test_retries_reach_a_caller_supplied_session():
+    import requests
+    from requests.adapters import HTTPAdapter
+    from ipaapi.client import IPAClient
+
+    session = requests.Session()
+    mine = HTTPAdapter(pool_maxsize=99)
+    session.mount("https://", mine)
+    IPAClient(Credentials("t"), session=session, retries=3)
+    assert session.get_adapter("https://x") is mine          # not replaced
+    assert mine.max_retries.total == 3                       # but retries work

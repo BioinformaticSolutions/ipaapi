@@ -40,9 +40,14 @@ __all__ = [
     "html_error_text",
 ]
 
-#: A '+' between two word characters is form-encoding standing in for a space;
-#: one following a letter-or-digit at the end of a token is part of the name.
-_PLUS_AS_SPACE = re.compile(r"(?<=[A-Za-z])\+(?=[A-Za-z])")
+#: A '+' standing in for a space in a form-encoded name.
+#:
+#: The protection for a chemical '+' -- NAD+, NADP+, Ca2+ -- comes entirely
+#: from the right-hand lookahead, since those are followed by a space or the
+#: end of the string. Requiring a LETTER on the left as well was too strict and
+#: left half the vocabulary half-decoded: IL-6+Signaling, HMGB1+Signaling and
+#: p38+MAPK+Signaling all end a token with a digit.
+_PLUS_AS_SPACE = re.compile(r"(?<=[A-Za-z0-9)\]])\+(?=[A-Za-z])")
 
 _ENTITY_ENDPOINTS = {
     "CANONICAL_PATHWAY": ("allCanonicalPathways", "pathways"),
@@ -122,10 +127,23 @@ class IPAClient:
         # client certificates, their own retry policy -- which is the opposite
         # of what the `session` argument is advertised for.
         self.session = session if session is not None else requests.Session()
-        if retries and session is None:
-            adapter = HTTPAdapter(max_retries=self._retry_policy(retries))
-            self.session.mount("https://", adapter)
-            self.session.mount("http://", adapter)
+        if retries:
+            # Set the retry policy ON the mounted adapter rather than mounting
+            # a replacement. Replacing discards whatever the caller configured
+            # -- pool sizing, client certificates -- which is the opposite of
+            # what the `session` argument is for; skipping it entirely instead
+            # silently turned retries off for every caller who passed one. An
+            # adapter that already carries a retry policy is left alone, since
+            # that is a deliberate choice by whoever made it.
+            policy = self._retry_policy(retries)
+            for scheme in ("https://", "http://"):
+                try:
+                    adapter = self.session.get_adapter(scheme)
+                except requests.exceptions.InvalidSchema:  # pragma: no cover
+                    self.session.mount(scheme, HTTPAdapter(max_retries=policy))
+                    continue
+                if getattr(getattr(adapter, "max_retries", None), "total", 0) in (0, None):
+                    adapter.max_retries = policy
 
     @staticmethod
     def _retry_policy(retries: int):
@@ -250,7 +268,7 @@ class IPAClient:
 
     @staticmethod
     def _parse_analysis_ids(response: requests.Response, expected: int) -> List[str]:
-        text = (response.text or "").strip()
+        text = (response.text or "").lstrip("\ufeff").strip()
         if response.status_code != 200:
             _raise_submission_error(
                 f"IPA rejected the submission (HTTP {response.status_code}).",
@@ -515,11 +533,14 @@ class IPAClient:
 QUOTA_PATTERNS = (
     "analysis limit exceeded",  # confirmed
     "analysis limit reached",
+    "analyses limit exceeded",
     "analysis quota",
     "analysis allowance",
     "usage limit",
     "too many analyses",
     "no analyses remaining",
+    "analyses remaining",
+    "out of analyses",
     "insufficient credits",
 )
 
@@ -532,7 +553,15 @@ QUOTA_PATTERNS = (
 #: the next run repeats it forever under the wrong diagnosis. They now count
 #: only next to a word that names the allowance as the thing exhausted.
 _LIMIT_WORDS = ("exceeded", "limit reached", "limit exceeded", "quota", "allowance")
-_ALLOWANCE_SUBJECTS = ("analys", "credit", "allowance", "quota", "licence", "license")
+
+#: Words that name the allowance itself.
+#:
+#: "analys" was here and had to go: every IPA refusal arrives wrapped in
+#: "Unable to run analysis:", so the page supplied the subject word for free
+#: and "Unable to run analysis: Maximum upload size exceeded" still classified
+#: as an exhausted account -- the exact case the narrowing was meant to fix.
+#: The confirmed allowance wordings are matched as whole phrases above instead.
+_ALLOWANCE_SUBJECTS = ("credit", "allowance", "quota", "licence", "license")
 
 
 def looks_like_quota(status_code: Optional[int], body: str) -> bool:
@@ -682,7 +711,9 @@ _GATEWAY_TIMEOUT = re.compile(
     r"|did not respond in time"
     r"|request timed out"
     r"|connection timed out"
-    r"|(?:^|[^\w.])(?:http\s*|error\s*|status\s*)?50[24]\s*(?=gateway|bad gateway|error|[-\u2013:]|$)",
+    r"|(?:^|[^\w.])(?:http|error|status)\s*50[24]\b"
+    r"|(?:^|[^\w.])50[24]\s*"
+    r"(?=gateway|bad gateway|error|server|upstream|[-\u2013:.,)<]|$)",
     re.IGNORECASE,
 )
 

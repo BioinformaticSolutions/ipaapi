@@ -29,7 +29,7 @@ from .errors import (
 )
 from .mapping import ColumnMapping, Measurement, Observation
 from .models import GENE_ID_TYPES, MeasurementType, ReferenceSet
-from .triage import FAILED_DIRNAME, TRIAGE_DIRNAMES, Triage
+from .triage import FAILED_DIRNAME, NOTE_SUFFIX, TRIAGE_DIRNAMES, Triage
 
 __all__ = ["main"]
 
@@ -399,6 +399,10 @@ def discover_files(
         and not any(
             part.startswith(".") for part in candidate.relative_to(root).parts
         )
+        # Our own quarantine notes are output, not input. TABLE_PATTERNS
+        # matches *.error.txt, so one dragged back out of failed/ during the
+        # ordinary fix-and-re-run workflow would be submitted as a dataset.
+        and not candidate.name.endswith(NOTE_SUFFIX)
         # Files already filed into submitted/ or failed/ are not input, or a
         # second run would resubmit work that succeeded the first time.
         and not (TRIAGE_DIRNAMES & set(candidate.relative_to(root).parts[:-1]))
@@ -427,7 +431,9 @@ def discover_files(
 _SINGLE_FILE_FLAGS = ("observation", "analysis_name", "dataset_name")
 
 
-def _already_submitted(project: str, dataset_name: str, log_file) -> Optional[dict]:
+def _already_submitted(
+    project: str, dataset_name: str, log_file, rows: Optional[Sequence[dict]] = None
+) -> Optional[dict]:
     """Return the earlier submission of this dataset to this project, if any.
 
     IPA refuses a dataset whose name already exists in a project, and reports it
@@ -435,8 +441,15 @@ def _already_submitted(project: str, dataset_name: str, log_file) -> Optional[di
     reads as an outage and sends people looking in entirely the wrong place.
     Since every submission is logged locally, the collision can be predicted
     rather than walked into.
+
+    *rows* is a snapshot of the log taken BEFORE the run began. Re-reading the
+    file per dataset let the guard see rows the current run had just written:
+    two input files with the same stem -- groupA/Sample_DEG.txt and
+    groupB/Sample_DEG.txt, or a .txt and a .csv of one table -- gave the second
+    file the first's analysis, so it was skipped, filed into submitted/ as
+    though it were done, and never analysed at all.
     """
-    for row in history.read(log_file):
+    for row in rows if rows is not None else history.read(log_file):
         if row.get("project") == project and row.get("dataset_name") == dataset_name:
             return row
     return None
@@ -721,14 +734,15 @@ def trim_name(name: str, limit: int = MAX_OBSERVATION_NAME, marker: str = "..") 
         tail = token + tail
     tail = tail.strip(_NAME_SEPARATORS)
 
-    # A long unbroken token followed by a short one leaves an empty head and a
-    # two-character tail, so the name came out as "..rep" or "..v2". A hard cut
-    # of the original carries far more meaning than that, so anything that
-    # would end up shorter than MIN_STRIPPED_NAME falls back to it. Common for
-    # GEO-derived, camelCase filenames with a version or replicate suffix.
-    candidate = (
-        f"{head}{marker}{tail}" if tail else f"{head}{marker}" if head else ""
-    )
+    # An empty head means the trim kept nothing but a suffix -- "..rep",
+    # "..rep1", "..final" -- which is strictly worse than a hard cut of the
+    # front, and throws away the contrast that opens the name. A length test
+    # was not the right measure: "..final" is six characters and still tells
+    # the reader nothing. Common for GEO-derived, camelCase filenames carrying
+    # a version or replicate suffix.
+    if not head:
+        return name[:limit]
+    candidate = f"{head}{marker}{tail}" if tail else f"{head}{marker}"
     if len(candidate.strip(_NAME_SEPARATORS + marker)) < MIN_STRIPPED_NAME:
         return name[:limit]
     return candidate
@@ -821,20 +835,35 @@ def _disambiguate(
 
     A numeric suffix is a poor label, so it is used only where it is needed:
     names that survived the trim distinctly are left exactly as they are.
+
+    Uniqueness is checked against every name already issued, not just against
+    the members of one collision group. Tagging per group was not enough: a
+    tagged ``..._2`` could equal an untagged third name, and a group of ten
+    produced a ``_10`` whose extra character pushed a different pair together.
+    Here each candidate is tested against what has actually been emitted, and
+    the counter keeps moving until it is genuinely unused.
     """
     counts: dict = {}
     for name in trimmed:
         counts[name] = counts.get(name, 0) + 1
 
-    seen: dict = {}
+    used = {name for name in trimmed if counts[name] == 1}
+    next_tag: dict = {}
     out: List[str] = []
     for name in trimmed:
         if counts[name] == 1:
             out.append(name)
             continue
-        seen[name] = seen.get(name, 0) + 1
-        tag = f"_{seen[name]}"
-        out.append(trim_name(name, limit - len(tag)) + tag)
+        n = next_tag.get(name, 0)
+        while True:
+            n += 1
+            tag = f"_{n}"
+            candidate = trim_name(name, limit - len(tag)) + tag
+            if candidate not in used:
+                break
+        next_tag[name] = n
+        used.add(candidate)
+        out.append(candidate)
     return out
 
 
@@ -873,6 +902,28 @@ def _load_datasets(args) -> Tuple[List[Dataset], List[Tuple[pathlib.Path, str]]]
                     f"{flag} applies to a single file, but {len(paths)} files matched. "
                     "Names are taken from each filename; use --project to group them."
                 )
+
+    # A dataset name is the file stem, and IPA refuses a repeat within a
+    # project. Two files can share a stem -- the same name in two
+    # subdirectories under --recursive, or a .txt and a .csv of one table --
+    # and the second would be rejected by IPA on its name alone, long after the
+    # first has been submitted and filed. Say so before anything is uploaded.
+    stems: dict = {}
+    for path in paths:
+        stems.setdefault(path.stem, []).append(path)
+    clashing = {stem: found for stem, found in stems.items() if len(found) > 1}
+    if clashing:
+        detail = "; ".join(
+            f"{stem!r}: " + ", ".join(str(f) for f in found)
+            for stem, found in sorted(clashing.items())
+        )
+        raise IPAError(
+            "Two or more input files would produce the same dataset name, and "
+            "IPA refuses a repeated dataset name within a project: "
+            + detail
+            + ".\nRename them, or submit them to separate projects with "
+            "--project."
+        )
 
     # Observation names are decided for the batch as a whole, because what is
     # safe to drop from one name depends on what the others contain.
@@ -1179,6 +1230,11 @@ def cmd_submit(args) -> int:
     # code is what a cron entry or a Snakemake rule actually reads. Without
     # this, submit exited 0 with files sitting in failed/ -- and --dry-run
     # exited 0 where `validate` on the same directory exited 1.
+    # Two different facts, and conflating them cost the exit code. What makes
+    # the run a failure is that a file did not validate; whether the move into
+    # failed/ then succeeded is a separate matter, and on a read-only input
+    # directory it does not. Deriving the exit code from triage.failed put the
+    # 0-with-files-unfiled hole straight back.
     quarantined = [path.name for path, _ in problems] if not systemic else []
 
     if systemic:
@@ -1210,10 +1266,13 @@ def cmd_submit(args) -> int:
 
     client = _client(args)
 
+    # One snapshot, before anything is submitted. See _already_submitted.
+    log_before = history.read(args.log_file) if not args.force else []
+
     analysis_ids: List[str] = []
     log_path: Optional[str] = None
     failures: List[str] = []
-    records: List[history.SubmissionRecord] = []
+    log_failed = False
     skipped: List[str] = []
     quota_reached = False
     malformed = False
@@ -1226,7 +1285,9 @@ def cmd_submit(args) -> int:
         prior = (
             None
             if args.force
-            else _already_submitted(args.project, dataset.name or "", args.log_file)
+            else _already_submitted(
+                args.project, dataset.name or "", args.log_file, rows=log_before
+            )
         )
         if prior is not None:
             print(
@@ -1313,8 +1374,11 @@ def cmd_submit(args) -> int:
             )
             for i, analysis_id in enumerate(submitted)
         ]
-        records.extend(just_now)
-        log_path = history.append(just_now, path=args.log_file) or log_path
+        written = history.append(just_now, path=args.log_file, quiet=log_failed)
+        if written is None:
+            log_failed = True      # say it once, not once per file
+        else:
+            log_path = written
         if triage is not None and source is not None:
             triage.mark_submitted(source)
 
@@ -1366,13 +1430,21 @@ def cmd_submit(args) -> int:
         )
 
     if quarantined:
-        noun = "file" if len(quarantined) == 1 else "files"
-        print(
-            f"\n{len(quarantined)} {noun} failed validation and "
-            f"{'was' if len(quarantined) == 1 else 'were'} moved to "
-            f"{FAILED_DIRNAME}/: " + ", ".join(quarantined),
-            file=sys.stderr,
-        )
+        moved = {p.name for p in triage.failed} if triage is not None else set()
+        filed = [n for n in quarantined if n in moved]
+        stayed = [n for n in quarantined if n not in moved]
+        if filed:
+            print(
+                f"\n{len(filed)} file(s) failed validation and were moved to "
+                f"{FAILED_DIRNAME}/: " + ", ".join(filed),
+                file=sys.stderr,
+            )
+        if stayed:
+            print(
+                f"\n{len(stayed)} file(s) failed validation but could not be "
+                "moved, so they are still in place: " + ", ".join(stayed),
+                file=sys.stderr,
+            )
 
     if not analysis_ids:
         if skipped and not failures and not quota_reached and not quarantined:
@@ -1473,6 +1545,41 @@ def cmd_report(args) -> int:
     return exit_code
 
 
+def _parse_since(text: str):
+    """Parse a --since value into an aware datetime.
+
+    Timestamps are stored in UTC since 1.4.0 but every log written before then
+    carries a local offset, and the filter used to compare the two as raw
+    strings -- so "2026-09-13" matched a Berlin row written at 00:10+02:00 and
+    missed the identical instant written by the new code as 22:10Z the previous
+    day. Both sides are now instants. A bare date means midnight UTC.
+    """
+    from datetime import datetime, timezone
+
+    value = text.strip()
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise IPAError(
+            f"--since {text!r} is not a date or time I can read. Use YYYY-MM-DD, "
+            "or a full ISO 8601 timestamp such as 2026-09-13T14:30. A bare date "
+            "is taken as midnight UTC."
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _timestamp_of(row: dict):
+    """A row's timestamp as an instant; unreadable ones sort oldest."""
+    from datetime import datetime, timezone
+
+    raw = (row.get("timestamp") or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def cmd_history(args) -> int:
     """List analyses submitted through this tool, oldest first."""
     rows = history.read(args.log_file)
@@ -1480,7 +1587,8 @@ def cmd_history(args) -> int:
     if args.project:
         rows = [r for r in rows if r.get("project") == args.project]
     if args.since:
-        rows = [r for r in rows if r.get("timestamp", "") >= args.since]
+        cutoff = _parse_since(args.since)
+        rows = [r for r in rows if _timestamp_of(r) >= cutoff]
     if args.limit is not None:
         if args.limit < 0:
             raise IPAError("--limit cannot be negative.")
@@ -1515,7 +1623,7 @@ def cmd_history(args) -> int:
         )
         if client is not None:
             try:
-                line += "  " + client.status(row["analysis_id"]).name.lower()
+                line += "  " + client.status(row.get("analysis_id", "")).name.lower()
             except IPAError as exc:
                 line += f"  (status unavailable: {exc})"
         print(line)

@@ -28,13 +28,22 @@ import pathlib
 import shutil
 from typing import List, Optional
 
-__all__ = ["Triage", "SUBMITTED_DIRNAME", "FAILED_DIRNAME", "TRIAGE_DIRNAMES"]
+__all__ = [
+    "Triage",
+    "SUBMITTED_DIRNAME",
+    "FAILED_DIRNAME",
+    "TRIAGE_DIRNAMES",
+    "NOTE_SUFFIX",
+]
 
 SUBMITTED_DIRNAME = "submitted"
 FAILED_DIRNAME = "failed"
 
 #: Never treated as input, so a second run does not pick up its own output.
 TRIAGE_DIRNAMES = frozenset({SUBMITTED_DIRNAME, FAILED_DIRNAME})
+
+#: Suffix of the note written beside a quarantined file. Never an input.
+NOTE_SUFFIX = ".error.txt"
 
 
 class Triage:
@@ -114,10 +123,14 @@ class Triage:
 
     @staticmethod
     def _write_note(moved_to: pathlib.Path, reason: str) -> None:
-        # _unique, like the move itself: TABLE_PATTERNS matches *.error.txt, so
-        # a note dragged back out of failed/ can be re-ingested as input on a
-        # later run, quarantined, and then have its own note written over it.
-        note = _unique(moved_to.with_suffix(moved_to.suffix + ".error.txt"))
+        # Named directly off the file it describes, so the pairing is never
+        # ambiguous -- going through _unique instead produced
+        # "<file>.error-1.txt" beside a stale "<file>.error.txt", and the
+        # obviously-named one then described a different run. An existing note
+        # here is our own from an earlier attempt, and is meant to be replaced.
+        # The re-ingestion this was guarding against is prevented at the
+        # source: cli.discover_files skips NOTE_SUFFIX.
+        note = moved_to.with_suffix(moved_to.suffix + NOTE_SUFFIX)
         try:
             note.write_text(reason.rstrip() + "\n", encoding="utf-8")
         except OSError:
