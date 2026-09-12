@@ -9,11 +9,19 @@ the install location, and whether it's an editable checkout rather than a wheel.
 
 ## 1.4.0 — 2026-09-12
 
-Thirty defects, found by reading the package end to end three times rather than
-by hitting them in use. The first pass found five; the second and third found
-the rest, which is the argument for not stopping at the first handful. Every one
-was reproduced before it was fixed, and each now has a regression test --
-62 new tests, 265 in total.
+Fifty-seven defects, found by reading the package end to end five times rather
+than by hitting them in use. Every one was reproduced before it was fixed, and
+each has a regression test -- 130 new tests, 333 in total.
+
+The count per round was 30, 14, 8, 5, 1. Most of what rounds two through five
+found were defects in the PREVIOUS round's fixes rather than things the original
+code had hidden: round two re-opened a hole round one had closed, round four
+turned `--strip` into a silent no-op while fixing how it interacted with
+shortening, and round five found that round four's OAuth guard had made a denial
+hang for five minutes. Each round's fixes are listed with the round that found
+them, because the pattern is the useful part: a fix written against one
+reproduction tends to be narrower or broader than the defect it names, and only
+another full pass shows which.
 
 Nothing here changes the command line or the Python API. What changes is what
 the tool accepts, what it calls things, and what it reports.
