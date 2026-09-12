@@ -72,7 +72,11 @@ def test_the_raw_body_is_reported_so_a_wrong_guess_is_visible():
 
 
 def test_quota_patterns_are_exposed_for_tuning():
-    assert "quota" in QUOTA_PATTERNS
+    # The confirmed wording is the anchor. A bare "quota" used to be in here
+    # too, along with "exceeded" and "limit reached"; those matched limits that
+    # have nothing to do with the allowance, so they now need a subject.
+    assert "analysis limit exceeded" in QUOTA_PATTERNS
+    assert "quota" not in QUOTA_PATTERNS
 
 
 # -- filing ----------------------------------------------------------------

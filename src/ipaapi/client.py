@@ -40,6 +40,10 @@ __all__ = [
     "html_error_text",
 ]
 
+#: A '+' between two word characters is form-encoding standing in for a space;
+#: one following a letter-or-digit at the end of a token is part of the name.
+_PLUS_AS_SPACE = re.compile(r"(?<=[A-Za-z])\+(?=[A-Za-z])")
+
 _ENTITY_ENDPOINTS = {
     "CANONICAL_PATHWAY": ("allCanonicalPathways", "pathways"),
     "UPSTREAM_REGULATOR": ("allUpstreamRegulators", "regulators"),
@@ -49,6 +53,9 @@ _ENTITY_ENDPOINTS = {
 #: Analysis IDs come back as a bare comma-separated string; this is the shape
 #: of a plausible ID, used to tell a real response from an error page.
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+#: /analysisstatus answers with a bare integer code and nothing else.
+_STATUS_CODE_RE = re.compile(r"^\d{1,3}$")
 
 
 @dataclass
@@ -110,8 +117,12 @@ class IPAClient:
     ) -> None:
         self.credentials = credentials
         self.timeout = timeout
-        self.session = session or requests.Session()
-        if retries:
+        # Only configure retries on a session we created. Mounting onto a
+        # caller's session discards the adapters they mounted -- pool sizing,
+        # client certificates, their own retry policy -- which is the opposite
+        # of what the `session` argument is advertised for.
+        self.session = session if session is not None else requests.Session()
+        if retries and session is None:
             adapter = HTTPAdapter(max_retries=self._retry_policy(retries))
             self.session.mount("https://", adapter)
             self.session.mount("http://", adapter)
@@ -273,7 +284,22 @@ class IPAClient:
                 f"Status check for {analysis_id} failed (HTTP {response.status_code}): "
                 f"{(response.text or '')[:300]}"
             )
-        return AnalysisStatus.from_code(response.text)
+        text = (response.text or "").strip()
+        # IPA delivers its errors inside HTTP 200 -- documented at
+        # _GATEWAY_TIMEOUT below, and the reason this module has an HTML
+        # detector at all. from_code() maps anything that is not 3, 4 or 5 to
+        # IN_PROGRESS, so an error page used to read as "still running":
+        # wait_for then polled out its entire budget and reported in_progress,
+        # which looks like a stuck analysis rather than a question never
+        # answered.
+        if looks_like_html(text) or not _STATUS_CODE_RE.match(text):
+            raise IPAError(
+                f"Status check for {analysis_id} did not return a status code. "
+                "IPA answers with HTTP 200 even when it is reporting an error, "
+                "so this is not necessarily a transport problem.\n"
+                f"IPA said: {(html_error_text(text) if looks_like_html(text) else text)[:400]!r}"
+            )
+        return AnalysisStatus.from_code(text)
 
     def wait_for(
         self,
@@ -404,7 +430,10 @@ class IPAClient:
             row = {}
             for key, value in item.items():
                 if isinstance(value, str) and key == "name":
-                    value = value.replace("+", " ")
+                    # Only a '+' that is standing in for a space. IPA's
+                    # vocabulary contains NAD+, NADP+ and Ca2+, and a blanket
+                    # replace turned "NAD+ Signaling" into "NAD  Signaling".
+                    value = _PLUS_AS_SPACE.sub(" ", value)
                 elif isinstance(value, bool):
                     pass
                 elif isinstance(value, (int, float)):
@@ -485,27 +514,43 @@ class IPAClient:
 #: misclassification stays visible.
 QUOTA_PATTERNS = (
     "analysis limit exceeded",  # confirmed
-    "quota",
-    "allowance",
-    "exceeded",
-    "limit reached",
+    "analysis limit reached",
+    "analysis quota",
+    "analysis allowance",
     "usage limit",
     "too many analyses",
     "no analyses remaining",
     "insufficient credits",
 )
 
+#: Words that mean "a limit was hit" but say nothing about WHICH limit. On
+#: their own they matched "Maximum upload size exceeded" and "Observation name
+#: length exceeded the maximum permitted" -- both permanent, per-file problems
+#: -- and quota is checked first, so it won every other branch. The consequence
+#: was not mild: cmd_submit reads quota as "the file is fine, IPA is busy", so
+#: it halts the batch, leaves the file in place instead of quarantining it, and
+#: the next run repeats it forever under the wrong diagnosis. They now count
+#: only next to a word that names the allowance as the thing exhausted.
+_LIMIT_WORDS = ("exceeded", "limit reached", "limit exceeded", "quota", "allowance")
+_ALLOWANCE_SUBJECTS = ("analys", "credit", "allowance", "quota", "licence", "license")
+
 
 def looks_like_quota(status_code: Optional[int], body: str) -> bool:
-    """Whether a rejection looks like an exhausted allowance.
+    """Whether a rejection looks like an exhausted analysis allowance.
 
-    HTTP 429 is treated as a quota response outright; otherwise the body is
-    searched for any of :data:`QUOTA_PATTERNS`.
+    HTTP 429 is treated as a quota response outright. Otherwise the body must
+    either carry one of the :data:`QUOTA_PATTERNS` phrases, or pair a
+    limit word with something naming the allowance -- so that a size limit or a
+    name-length limit is no longer read as an exhausted account.
     """
     if status_code == 429:
         return True
     haystack = (body or "").lower()
-    return any(pattern in haystack for pattern in QUOTA_PATTERNS)
+    if any(pattern in haystack for pattern in QUOTA_PATTERNS):
+        return True
+    if not any(word in haystack for word in _LIMIT_WORDS):
+        return False
+    return any(subject in haystack for subject in _ALLOWANCE_SUBJECTS)
 
 
 def looks_like_html(body: str) -> bool:
@@ -622,6 +667,14 @@ _OUTAGE = re.compile(
 #: Delivered in the *body* of an HTTP 200, like every other IPA error, so the
 #: status-code check below never sees it. Observed wording: "504 Gateway
 #: Time-out The server didn't respond in time."
+#:
+#: The numeric alternative is anchored to the shapes a status code actually
+#: appears in -- "504 Gateway Time-out", "HTTP 502", "Error 504" -- rather than
+#: matching a bare 502 or 504 anywhere in the body. Unanchored it matched
+#: "Unable to run analysis: 504 identifiers could not be mapped", and since the
+#: timeout branch is tested before the refusal branch, a considered refusal was
+#: reported as a timeout, with the message that the command and the data were
+#: almost certainly fine.
 _GATEWAY_TIMEOUT = re.compile(
     r"gateway time-?out"
     r"|bad gateway"
@@ -629,7 +682,7 @@ _GATEWAY_TIMEOUT = re.compile(
     r"|did not respond in time"
     r"|request timed out"
     r"|connection timed out"
-    r"|\b50[24]\b",
+    r"|(?:^|[^\w.])(?:http\s*|error\s*|status\s*)?50[24]\s*(?=gateway|bad gateway|error|[-\u2013:]|$)",
     re.IGNORECASE,
 )
 
