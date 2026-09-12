@@ -337,7 +337,13 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             incoming = params.get("state", [None])[0]
             already = result.get("code") or result.get("error")
             settled = already and (expected is None or result.get("state") == expected)
-            if settled or (already and expected is not None and incoming != expected):
+            stale = (
+                already
+                and expected is not None
+                and incoming is not None
+                and incoming != expected
+            )
+            if settled or stale:
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -376,7 +382,15 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             # the event until the state matches lets the real one through, and
             # a redirect that never matches simply runs out the login timeout,
             # which now says a mismatched redirect was seen.
-            if expected is None or incoming == expected:
+            # A redirect that carries NO state at all still wakes login. RFC
+            # 6749 only requires the server to echo state when the request
+            # carried it, and several providers omit it on an error response --
+            # so requiring a match here meant clicking "Deny" sat for the full
+            # five-minute timeout and was then reported as the browser never
+            # coming back. login() still validates the state before exchanging
+            # anything; the point of this condition is only to avoid waking on
+            # a redirect that visibly belongs to a different attempt.
+            if expected is None or incoming is None or incoming == expected:
                 self.server.done.set()  # type: ignore[attr-defined]
         else:
             self.send_response(404)

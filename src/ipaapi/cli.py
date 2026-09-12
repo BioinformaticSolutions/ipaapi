@@ -879,18 +879,31 @@ def _disambiguate(
     return out
 
 
-def _report_shortened_names(requested: Sequence[str], resolved: Sequence[str]) -> None:
+def _report_shortened_names(
+    requested: Sequence[str], resolved: Sequence[str], limit: int = MAX_OBSERVATION_NAME
+) -> None:
     """Say what was renamed and why -- once for the batch, not once per file."""
     changed = [(was, now) for was, now in zip(requested, resolved) if was != now]
     if not changed:
         return
     noun = "name" if len(changed) == 1 else "names"
-    print(
-        f"note: shortened {len(changed)} observation {noun}. IPA rejects a long "
-        f"observation name and reports it as an outage, so this is not optional.\n"
-        f"      Datasets and analyses keep the full filename; only the "
-        f"observation label inside the analysis is shorter."
-    )
+    # Only claim IPA forced this if it did. Now that --strip always applies,
+    # renaming names that already fit is the flag's commonest use, and telling
+    # the user their own rename was "not optional" is simply untrue.
+    forced = any(len(was) > limit for was, _ in changed)
+    if forced:
+        print(
+            f"note: shortened {len(changed)} observation {noun}. IPA rejects a long "
+            f"observation name and reports it as an outage, so this is not optional.\n"
+            f"      Datasets and analyses keep the full filename; only the "
+            f"observation label inside the analysis is shorter."
+        )
+    else:
+        print(
+            f"note: rewrote {len(changed)} observation {noun} as --strip asked.\n"
+            f"      Datasets and analyses keep the full filename; only the "
+            f"observation label inside the analysis changes."
+        )
     for was, now in changed:
         print(f"      {was}\n   -> {now}")
     print()

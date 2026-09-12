@@ -169,24 +169,35 @@ def _first_row_is_data(frame: "pd.DataFrame") -> bool:
     if len(frame) == 0 or len(frame.columns) < 2:
         return False
 
-    # The FIRST row that says anything decides, and only that row. It has to be
-    # the first: in the comment case row 0 is the real header, and looking
-    # further down would find the genuine data beneath it and conclude the
-    # comment was a header after all.
+    # Judged COLUMN by column, not row by row, and only on row 0.
     #
-    # Blank rows are skipped rather than counted against it, which is the other
-    # half. A real '#'-marked header whose first gene carries NA everywhere --
-    # a zero-count gene, which sorting can easily put first -- is not evidence
-    # of anything, and treating it as evidence got the file refused with advice
-    # that then promoted a data row to header and lost a gene.
-    for _, row in frame.iloc[: min(len(frame), 5)].iterrows():
-        values = [v for v in list(row)[1:] if not is_blank(v)]
+    # Row 0 and no further: in the comment case row 0 IS the real header, and
+    # looking down past it finds the genuine data and concludes the comment was
+    # a header after all.
+    #
+    # Column by column, because a row is a mixture. A real '#'-marked header
+    # over DESeq2 output has annotation columns carrying text and measurement
+    # columns carrying numbers, and the first gene may well be a zero-count one
+    # whose statistics are all NA -- sorting can put it first. Asking "is any
+    # value in row 0 numeric" then answers no, on the strength of the symbol
+    # and biotype columns, and the file is refused with advice that promotes a
+    # data row to header and loses that gene. So a column counts as evidence
+    # only where it holds something, and a column that is blank in row 0 is
+    # checked further down before being given up on.
+    sample = frame.iloc[: min(len(frame), 20)]
+    for column in list(frame.columns)[1:]:
+        values = [v for v in sample[column].tolist() if not is_blank(v)]
         if not values:
             continue
-        return bool(pd.to_numeric(pd.Series(values), errors="coerce").notna().any())
+        # This column has data somewhere. Does row 0 of it read as a number, or
+        # -- if row 0 is blank here -- does the column as a whole?
+        head = sample[column].iloc[0]
+        probe = [head] if not is_blank(head) else values[:1]
+        if pd.to_numeric(pd.Series(probe), errors="coerce").notna().any():
+            return True
 
-    # Nothing but blanks. Either the marked line is a comment above the real
-    # header, or the table carries no measurements at all -- and this tool
+    # No column reads as numeric. Either the marked line is a comment above the
+    # real header, or the table carries no measurements at all -- and this tool
     # needs a numeric column either way, so refusing is right.
     return False
 
@@ -214,10 +225,20 @@ def _warn_if_header_looks_wrong(
     # while a prose comment only splits because it happens to contain a comma.
     # Without that agreement this stays an error, because the old advice is
     # destructive here -- --skip-rows 1 promotes the first DATA row to header.
+    # Two independent signals, and the marker's own spacing is the stronger of
+    # them. A header prefixed with a marker is written tight -- "#Gene",
+    # "#chrom", "#CHROM POS ID" from bedtools, MACS and VCF -- while a prose
+    # comment is written as prose, with a space after the marker. That alone
+    # separates "#Gene ID,log2 FC,p value" from "# DESeq2 results, liver, run
+    # 3", including the case the row check cannot see: a comment above a header
+    # whose columns are named 0 and 24, where row 0 reads as numeric because
+    # those ARE the column names.
+    marked_tight = not str(frame.columns[0]).lstrip("#/;!")[:1].isspace()
     if (
         looks_like_comment
         and not single_column
         and delimiter_agreed
+        and marked_tight
         and _first_row_is_data(frame)
     ):
         stripped = str(frame.columns[0]).lstrip("#/;! ").strip()

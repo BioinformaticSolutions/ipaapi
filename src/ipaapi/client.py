@@ -345,11 +345,25 @@ class IPAClient:
         final: Dict[str, AnalysisStatus] = {}
         last_seen: Dict[str, AnalysisStatus] = {}
 
+        transient: Dict[str, str] = {}
         while True:
             for analysis_id in ids:
                 if analysis_id in final:
                     continue
-                state = self.status(analysis_id)
+                # One unreadable poll must not abandon the whole wait. IPA
+                # answers with HTTP 200 even when reporting an error, so a
+                # single maintenance page mid-poll used to raise out of the
+                # loop and return nothing for ANY analysis -- after a submit
+                # that had fully succeeded and been logged. cmd_status was
+                # guarded per ID in 1.4.0; this has the same shape and was not.
+                try:
+                    state = self.status(analysis_id)
+                except IPAError as exc:
+                    if transient.get(analysis_id) != str(exc) and progress:
+                        print(f"analysis {analysis_id}: status unavailable ({exc})")
+                    transient[analysis_id] = str(exc)
+                    continue
+                transient.pop(analysis_id, None)
                 if progress and last_seen.get(analysis_id) is not state:
                     print(f"analysis {analysis_id}: {state.name.lower()}")
                 last_seen[analysis_id] = state

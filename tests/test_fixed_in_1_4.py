@@ -738,3 +738,81 @@ def test_a_stale_redirect_does_not_wake_login():
     hit("/?code=REAL&state=NEW")
     assert server.done.is_set()
     assert server.result["code"] == "REAL"
+
+
+# -- fifth audit round -------------------------------------------------------
+
+
+@pytest.mark.parametrize("query", ["/?error=access_denied", "/?code=ABC"])
+def test_a_redirect_without_state_still_wakes_login(query):
+    """RFC 6749 only requires state to be echoed when the request carried it,
+    and providers omit it on error responses. Requiring a match meant clicking
+    Deny sat for the full five-minute timeout, then blamed the browser."""
+    import threading
+    from ipaapi.auth import _CallbackHandler
+
+    class FakeServer:
+        def __init__(self):
+            self.result = {}
+            self.expected_state = "NEW"
+            self.done = threading.Event()
+
+    server = FakeServer()
+    handler = _CallbackHandler.__new__(_CallbackHandler)
+    handler.server = server
+    handler.path = query
+    handler.send_response = lambda *a, **k: None
+    handler.send_header = lambda *a, **k: None
+    handler.end_headers = lambda: None
+    handler.wfile = type("W", (), {"write": lambda self, b: None})()
+    handler.do_GET()
+    assert server.done.is_set()
+
+
+@pytest.mark.parametrize("text,readable", [
+    # A real header with annotation columns and an all-NA first gene.
+    ("#Gene ID,symbol,biotype,log2 FC,p value\n"
+     "ENSG1,TP53,protein_coding,NA,NA\nENSG2,BRCA1,protein_coding,-3.0,0.02\n", True),
+    # The numeric column last of ten, blank on row 0.
+    ("#G,a,b,c,d,e,f,g,h,log2FC\nE1,x,x,x,x,x,x,x,x,NA\nE2,x,x,x,x,x,x,x,x,2.5\n", True),
+    # A comment above a header whose columns are NAMED 0 and 24.
+    ("# DESeq2 results, liver, run 3\nGene,0,24\nENSG1,2.5,0.01\nENSG2,-3,0.2\n", False),
+])
+def test_hash_header_detection_across_realistic_shapes(text, readable):
+    path = write(text)
+    if readable:
+        assert load_table(path) is not None
+    else:
+        with pytest.raises(MappingError, match="header row"):
+            load_table(path)
+
+
+def test_one_bad_poll_does_not_abandon_the_whole_wait():
+    """IPA answers with HTTP 200 even when reporting an error, so a single
+    maintenance page mid-poll used to return nothing for any analysis."""
+    from ipaapi.client import IPAClient
+    from ipaapi.models import AnalysisStatus
+
+    client = IPAClient.__new__(IPAClient)
+    calls = {"n": 0}
+
+    def status(analysis_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IPAError("did not return a status code")
+        return AnalysisStatus.SUCCEEDED
+
+    client.status = status
+    result = client.wait_for(["a", "b"], interval=0, timeout=5, progress=False)
+    assert result == {"a": AnalysisStatus.SUCCEEDED, "b": AnalysisStatus.SUCCEEDED}
+
+
+def test_the_note_does_not_blame_ipa_for_your_own_rename(capsys):
+    cli._report_shortened_names(["Estrus_vs_2dpp_ovary_paralome_v3"],
+                                ["Estrus_vs_2dpp_ovary"])
+    out = capsys.readouterr().out
+    assert "as --strip asked" in out
+    assert "not optional" not in out
+
+    cli._report_shortened_names(["A" * 70], ["A" * 58])
+    assert "not optional" in capsys.readouterr().out
