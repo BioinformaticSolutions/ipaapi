@@ -7,6 +7,46 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
+## 1.6.0 — 2026-09-13
+
+An entitlement refusal is not a dead token, and the documentation says what was
+actually established rather than what was assumed.
+
+### Fixed
+
+- **A 401 refusing the account, not the token, made the client sign in again.**
+  Live against a working licence, a result-retrieval call answered
+  `401 {"code":"Unauthorized","message":"You have exceeded the lifetime limit
+  for this operation..."}`. 1.5.0 read the status code as a refused token, so
+  it refreshed and replayed the request, and with a stale refresh token would
+  have announced a login and opened a browser -- on a headless server, blocking
+  for the login timeout -- over a refusal no login can fix. The account had to
+  be identified before its lifetime usage could be looked up, so the token had
+  plainly been accepted. `looks_like_entitlement_refusal` now takes precedence
+  over the status code, because the status code cannot carry this distinction:
+  IPA answers an exhausted allowance with 403, a missing add-on with 500, an
+  exhausted lifetime limit with 401, and a rejected submission with 200 and an
+  HTML page. Only the message separates them.
+- **`results()` asserted a cause it had not established.** Every non-200 was
+  reported as "requires the commercial IPA add-on licence". IPA said something
+  different. It now quotes IPA's own message and says plainly that these
+  endpoints are not in the published API documentation.
+
+### Documentation
+
+- The README is rewritten. It had drifted: it announced itself as 1.3, printed
+  a token cache path (`tokens.json`) that the code has never written, described
+  the `report` 500 as unconfirmed when it had been confirmed in use, and
+  predated every flag added in 1.5.0. It now documents `login --timeout`,
+  `IPAAPI_LOGIN_TIMEOUT`, mid-run token renewal and `TokenRefusedError`.
+- Result retrieval is described as what it is -- endpoints inherited from
+  QIAGEN's `python-api-demo`, living under `/pa/ipa/analysisResults/` rather
+  than the documented `/pa/api/v2/` surface that submission and status use, and
+  refused on at least one real licence.
+- Worked examples no longer carry one project's filenames.
+
+351 tests, up from 348.
+
 ## 1.5.0 — 2026-09-13
 
 Authentication, after live use over a VPN. A login that timed out with no way

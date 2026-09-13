@@ -1154,3 +1154,71 @@ def test_a_refused_refresh_announces_itself_and_runs_the_login(capsys):
     # force, so it cannot hand back the same dead token out of the cache.
     assert seen["force"] is True
     assert seen["browser"] == "firefox"
+
+
+# -- an entitlement refusal is not a dead token ----------------------------
+#
+# Live, against a licence that submits and polls fine:
+#
+#   GET /pa/ipa/analysisResults/allCanonicalPathways/PythonAPI/43609391
+#   401 {"error":{"code":"Unauthorized","message":"You have exceeded the
+#        lifetime limit for this operation. Please contact Ingenuity Customer
+#        Support ...","innererror":{"code":"Unauthorized"},"details":[]}}
+#
+# 1.5.0 read that as a refused token: it refreshed and replayed, and with a
+# stale refresh token it would have announced a login and opened a browser --
+# on a headless server, blocking for the login timeout -- over a refusal that
+# no login can fix. The account had to be identified before its lifetime usage
+# could be looked up, so the token was accepted.
+
+_LIFETIME_401 = (
+    '{"error":{"code":"Unauthorized","message":"You have exceeded the lifetime '
+    'limit for this operation.Please contact Ingenuity Customer Support at '
+    'AdvancedGenomicsSupport@qiagen.com or call 1-650-381-5111.",'
+    '"innererror":{"code":"Unauthorized"},"details":[]}}'
+)
+
+
+def test_a_lifetime_limit_401_is_not_read_as_a_dead_token():
+    from ipaapi.client import looks_like_auth_failure, looks_like_entitlement_refusal
+
+    assert looks_like_entitlement_refusal(_LIFETIME_401)
+    assert not looks_like_auth_failure(401, _LIFETIME_401)
+    # A real token rejection still is one.
+    assert looks_like_auth_failure(401, "error=invalid_token")
+    assert looks_like_auth_failure(401, "")
+
+
+def test_an_entitlement_401_never_triggers_a_login():
+    """The expensive half: no refresh, no browser, no wasted replay."""
+    import ipaapi.client as client_module
+
+    client = _client_with(_Resp(_LIFETIME_401, 401))
+
+    def fail(*a, **k):                      # pragma: no cover - must not run
+        raise AssertionError("renewal attempted on an entitlement refusal")
+
+    client_module.refresh, original_refresh = fail, client_module.refresh
+    client_module.login, original_login = fail, client_module.login
+    try:
+        response = client._send("GET", "/pa/ipa/analysisResults/allCanonicalPathways/x/1")
+    finally:
+        client_module.refresh = original_refresh
+        client_module.login = original_login
+
+    assert response.status_code == 401
+    assert len(client.session.sent) == 1     # sent once, not replayed
+
+
+def test_results_reports_what_ipa_said_instead_of_naming_a_licence():
+    """1.5.0 called every non-200 a missing add-on. IPA said otherwise."""
+    from ipaapi.client import IPAClient
+    from ipaapi.errors import ResultsUnavailableError
+
+    client = _client_with(_Resp(_LIFETIME_401, 401))
+    with pytest.raises(ResultsUnavailableError) as caught:
+        client._entity_scores("43609391", "CANONICAL_PATHWAY")
+    message = str(caught.value)
+    assert "add-on" not in message
+    assert "lifetime limit" in message           # IPA's own words, quoted back
+    assert "not in IPA's published API documentation" in message

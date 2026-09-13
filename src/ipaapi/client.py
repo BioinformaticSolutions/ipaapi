@@ -38,6 +38,7 @@ __all__ = [
     "QUOTA_PATTERNS",
     "looks_like_quota",
     "looks_like_auth_failure",
+    "looks_like_entitlement_refusal",
     "looks_like_html",
     "looks_like_outage",
     "html_error_text",
@@ -512,10 +513,20 @@ class IPAClient:
             ) from exc
 
         if response.status_code != 200:
+            detail = (response.text or "").strip()[:600]
+            # These endpoints are not part of the documented /pa/api/v2/
+            # surface; they came from QIAGEN's demo. Refusals here have been
+            # seen with at least two unrelated causes, so report what IPA said
+            # rather than asserting one. Claiming the add-on was wrong at least
+            # once: the observed refusal was a 401 naming a lifetime limit.
             raise ResultsUnavailableError(
                 f"Could not fetch {entity.lower()} results for {analysis_id} "
-                f"(HTTP {response.status_code}). Programmatic result retrieval "
-                "requires the commercial IPA add-on licence."
+                f"(HTTP {response.status_code}).\n"
+                "Result retrieval uses endpoints that are not in IPA's "
+                "published API documentation, and access to them varies by "
+                "account. The analysis itself is unaffected and opens normally "
+                "in IPA."
+                + (f"\nIPA said: {detail!r}" if detail else "")
             )
         try:
             payload = response.json()
@@ -676,6 +687,38 @@ def looks_like_quota(status_code: Optional[int], body: str) -> bool:
     return any(subject in haystack for subject in _ALLOWANCE_SUBJECTS)
 
 
+#: Wordings IPA uses to refuse an operation the account is not entitled to.
+#:
+#: Confirmed in use, and the reason this list exists: a result-retrieval call
+#: came back HTTP 401 with "You have exceeded the lifetime limit for this
+#: operation." That is an entitlement verdict, not a credential problem -- the
+#: account had to be identified before its lifetime usage could be looked up,
+#: so the token was accepted. Reading it as a dead token made the client
+#: refresh and replay, and could escalate to opening a browser on a headless
+#: machine over a refusal no login can fix.
+#:
+#: Whether the allowance was consumed or was zero from the start does not
+#: matter here: neither is fixed by signing in again.
+_ENTITLEMENT_REFUSAL = (
+    "lifetime limit",
+    "exceeded the limit",
+    "not licensed",
+    "not entitled",
+    "contact ingenuity customer support",
+)
+
+
+def looks_like_entitlement_refusal(body: str) -> bool:
+    """Whether a refusal is about what the account may do, not about its token.
+
+    Matched on wording because the status code cannot carry it: IPA answers an
+    exhausted allowance with 403, a missing add-on with 500, and an exhausted
+    lifetime limit with 401. Only the message distinguishes them.
+    """
+    haystack = (body or "").lower()
+    return any(phrase in haystack for phrase in _ENTITLEMENT_REFUSAL)
+
+
 #: OAuth error codes that name a dead token. Matched only in a short, non-HTML
 #: body, or in a WWW-Authenticate header, where they can only mean one thing.
 _TOKEN_ERROR_CODES = ("invalid_token", "invalid_grant", "expired_token")
@@ -687,7 +730,9 @@ def looks_like_auth_failure(
     """Whether IPA refused the token rather than the request.
 
     Deliberately narrow: HTTP 401, or an OAuth error code in a
-    ``WWW-Authenticate`` header or a short plain-text body. Nothing else.
+    ``WWW-Authenticate`` header or a short plain-text body. Nothing else -- and
+    not even that when the body reads as an entitlement refusal, which IPA also
+    delivers as 401. See :func:`looks_like_entitlement_refusal`.
 
     403 is excluded, for two reasons that point the same way. It means the
     token was accepted and the *action* was refused, so signing in again cannot
@@ -706,6 +751,11 @@ def looks_like_auth_failure(
     false positive is throwing away a valid session mid-batch and opening a
     browser on a machine that has none.
     """
+    # Before the status check, not after: IPA returns 401 for an entitlement
+    # refusal as well as for a bad token, and only the message separates them.
+    if looks_like_entitlement_refusal(body):
+        return False
+
     if status_code == 401:
         return True
 
