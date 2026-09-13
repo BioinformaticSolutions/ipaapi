@@ -1171,6 +1171,10 @@ def cmd_login(args) -> int:
         print("\nUse --force to sign in again anyway.")
         return 0
 
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None and timeout <= 0:
+        raise IPAError("--timeout must be a positive number of seconds.")
+
     credentials = login(
         client_id=DEFAULT_CLIENT_ID,
         application_name=args.application_name,
@@ -1179,6 +1183,7 @@ def cmd_login(args) -> int:
         open_browser=not args.no_browser,
         browser=getattr(args, "browser", None),
         force=args.force,
+        timeout=timeout,
     )
 
     print("Signed in.")
@@ -1917,6 +1922,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ipaapi login\n"
             "  ipaapi login --force              # sign in again even if valid\n"
             "  ipaapi login --no-browser         # print the URL instead\n"
+            "  ipaapi login --timeout 900        # a slow forwarded browser\n"
             "  ipaapi login --forget             # clear the cached token\n"
         ),
         formatter_class=_Formatter,
@@ -1935,6 +1941,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="print the authorization URL instead of opening a browser",
+    )
+    signin.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="seconds to wait for authorization before giving up (default 300). "
+        "Raise it when a forwarded browser is slow to appear, e.g. over a VPN. "
+        "IPAAPI_LOGIN_TIMEOUT sets the same clock for logins that other "
+        "commands start on their own",
     )
     _add_auth_arguments(signin)
     signin.set_defaults(func=cmd_login)

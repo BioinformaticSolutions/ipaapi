@@ -57,6 +57,8 @@ __all__ = [
     "AUTHORIZATION_BASE_URL",
     "TOKEN_URL",
     "DEFAULT_HOST",
+    "LOGIN_TIMEOUT_ENV",
+    "DEFAULT_LOGIN_TIMEOUT",
 ]
 
 #: Public client ID usable by any IPA user; not a secret.
@@ -150,6 +152,43 @@ class Credentials:
 #: writable -- a shared or exported filesystem, for instance -- since a cache
 #: that cannot be written means re-authenticating on every single run.
 TOKEN_FILE_ENV = "IPAAPI_TOKEN_FILE"
+
+#: Overrides how long a login waits for the user to finish authorizing.
+#:
+#: There is a flag for this on ``ipaapi login``, but every other command logs
+#: in as a side effect of doing something else and ``submit`` already owns
+#: ``--timeout`` for a different clock. An environment variable therefore
+#: reaches the logins that have no flag of their own, and is set once for a
+#: machine that needs it -- a server reached over a slow VPN, where five
+#: minutes is not enough to get through a forwarded browser.
+LOGIN_TIMEOUT_ENV = "IPAAPI_LOGIN_TIMEOUT"
+
+#: Seconds a login waits for authorization when nothing overrides it.
+DEFAULT_LOGIN_TIMEOUT = 300.0
+
+
+def _default_login_timeout() -> float:
+    """Resolve the login timeout from the environment, falling back to 300s.
+
+    A bad value is reported and ignored rather than raised: an unparseable
+    environment variable should not be the reason a login fails, and silently
+    using the default would leave a user who set it to "5m" wondering why five
+    minutes was not five minutes.
+    """
+    raw = os.environ.get(LOGIN_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_LOGIN_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        print(
+            f"Warning: ignoring {LOGIN_TIMEOUT_ENV}={raw!r} -- it must be a "
+            f"positive number of seconds. Using {DEFAULT_LOGIN_TIMEOUT:g}s."
+        )
+        return DEFAULT_LOGIN_TIMEOUT
+    return value
 
 
 def _default_cache_path() -> str:
@@ -672,7 +711,7 @@ def login(
     token_url: str = TOKEN_URL,
     redirect_uri: str = DEFAULT_REDIRECT_URI,
     scope: Optional[str] = None,
-    timeout: float = 300.0,
+    timeout: Optional[float] = None,
     open_browser: bool = True,
     browser: Optional[str] = None,
     cache: Optional[TokenCache] = None,
@@ -692,7 +731,8 @@ def login(
         redirect_uri: Loopback URI the authorization server redirects to. Must
             match the client registration.
         scope: Optional scope string.
-        timeout: Seconds to wait for the user to finish authorizing.
+        timeout: Seconds to wait for the user to finish authorizing. ``None``
+            takes the value of ``IPAAPI_LOGIN_TIMEOUT``, or 300 seconds.
         open_browser: Open the URL automatically. When ``False``, the URL is
             printed for the user to open themselves -- useful over SSH.
         cache: Optional :class:`TokenCache`. When given, a valid cached token is
@@ -706,6 +746,9 @@ def login(
         AuthenticationError: On timeout, state mismatch, an error response from
             the authorization server, or a failed token exchange.
     """
+    if timeout is None:
+        timeout = _default_login_timeout()
+
     if cache is not None and not force:
         cached = cache.get(client_id, application_name, host)
         if cached is not None:

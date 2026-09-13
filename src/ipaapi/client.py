@@ -12,11 +12,12 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from . import _payload
-from .auth import Credentials, TokenCache, login
+from .auth import Credentials, TokenCache, login, refresh
 from .dataset import Dataset
 from .errors import (
     AnalysisError,
     AnalysisRefusedError,
+    AuthenticationError,
     GatewayTimeoutError,
     IPAError,
     MalformedRequestError,
@@ -24,6 +25,7 @@ from .errors import (
     ResultsUnavailableError,
     ServiceUnavailableError,
     SubmissionError,
+    TokenRefusedError,
 )
 from .models import AnalysisStatus, ReferenceSet
 
@@ -35,6 +37,7 @@ __all__ = [
     "AnalysisResults",
     "QUOTA_PATTERNS",
     "looks_like_quota",
+    "looks_like_auth_failure",
     "looks_like_html",
     "looks_like_outage",
     "html_error_text",
@@ -124,6 +127,11 @@ class IPAClient:
     ) -> None:
         self.credentials = credentials
         self.timeout = timeout
+        # How to get a new token when IPA refuses this one. Populated by
+        # login(); a client constructed directly can still refresh, because a
+        # refresh needs only the credentials themselves.
+        self._cache: Optional[TokenCache] = None
+        self._login_kwargs: Dict[str, object] = {}
         # Only configure retries on a session we created. Mounting onto a
         # caller's session discards the adapters they mounted -- pool sizing,
         # client certificates, their own retry policy -- which is the opposite
@@ -159,8 +167,15 @@ class IPAClient:
         """Run the browser OAuth flow and return a ready client.
 
         Accepts every keyword :func:`ipaapi.auth.login` takes.
+
+        The cache and the keywords are kept so the client can renew the token
+        the same way it obtained it, without the caller having to hand them
+        over a second time.
         """
-        return cls(credentials=login(cache=cache, **kwargs))
+        client = cls(credentials=login(cache=cache, **kwargs))
+        client._cache = cache
+        client._login_kwargs = dict(kwargs)
+        return client
 
     # -- plumbing ----------------------------------------------------------
 
@@ -175,15 +190,77 @@ class IPAClient:
     def _url(self, path: str) -> str:
         return f"https://{self.host}/{path.lstrip('/')}"
 
+    # -- authentication ----------------------------------------------------
+
+    def _renew_credentials(self) -> bool:
+        """Get a working token after IPA refused the current one.
+
+        The single path every command takes when a token goes bad, so that a
+        stale token behaves the same way whether it was noticed by ``submit``,
+        ``status``, ``history`` or ``report``.
+
+        Two steps, quiet one first:
+
+        1. Exchange the refresh token. No browser, nothing printed -- this is
+           the ordinary case for a batch that outlives its access token, and it
+           should not look like an event.
+        2. If that is refused, say so and run the full login, which is what the
+           user would have typed next anyway. On a machine with no browser this
+           is where it will fail, and it fails with the reason rather than with
+           a misread submission error.
+
+        Returns whether the client now holds credentials worth retrying with.
+        """
+        previous = self.credentials.access_token
+        try:
+            self.credentials = refresh(self.credentials, cache=self._cache)
+            return self.credentials.access_token != previous
+        except AuthenticationError as exc:
+            print(f"Your refresh token was refused ({exc}). Running `ipaapi login` now.")
+
+        kwargs = dict(self._login_kwargs)
+        kwargs.pop("force", None)
+        kwargs.setdefault("application_name", self.credentials.application_name)
+        kwargs.setdefault("host", self.credentials.host)
+        self.credentials = login(cache=self._cache, force=True, **kwargs)
+        return self.credentials.access_token != previous
+
+    def _send(self, method: str, path: str, **kwargs) -> requests.Response:
+        """Send one authenticated request, renewing the token once if refused.
+
+        The authorization header is built per attempt rather than passed in, so
+        the replay carries the new token rather than the dead one -- the whole
+        point of the exercise.
+
+        Replaying a POST is safe here only because the retry is gated on
+        :func:`looks_like_auth_failure`, which fires on a rejection that
+        happened before IPA looked at the body. A retry on anything vaguer
+        could create a duplicate analysis, which is why submissions are not
+        retried in general.
+        """
+        url = self._url(path)
+        headers = dict(kwargs.pop("headers", None) or {})
+        response = None
+        for attempt in (0, 1):
+            response = self.session.request(
+                method,
+                url,
+                headers={**headers, **self.credentials.auth_header},
+                timeout=self.timeout,
+                **kwargs,
+            )
+            if attempt == 0 and looks_like_auth_failure(
+                response.status_code, response.text or "", getattr(response, "headers", None)
+            ):
+                if self._renew_credentials():
+                    continue
+            return response
+        return response
+
     def _get(self, path: str, **params) -> requests.Response:
         params.setdefault("applicationname", self.application_name)
         try:
-            return self.session.get(
-                self._url(path),
-                headers=self.credentials.auth_header,
-                params=params,
-                timeout=self.timeout,
-            )
+            return self._send("GET", path, params=params)
         except requests.RequestException as exc:
             raise IPAError(f"Request to {path} failed: {exc}") from exc
 
@@ -249,14 +326,11 @@ class IPAClient:
         body = _payload.encode_submission(pairs)
 
         try:
-            response = self.session.post(
-                self._url("/pa/api/v2/multiobsanalysis"),
-                headers={
-                    **self.credentials.auth_header,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
+            response = self._send(
+                "POST",
+                "/pa/api/v2/multiobsanalysis",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 data=body.encode("utf-8"),
-                timeout=self.timeout,
             )
         except requests.RequestException as exc:
             raise SubmissionError(f"Submission request failed: {exc}") from exc
@@ -431,11 +505,7 @@ class IPAClient:
         endpoint, json_key = _ENTITY_ENDPOINTS[entity]
         url = f"/pa/ipa/analysisResults/{endpoint}/{self.application_name}/{analysis_id}"
         try:
-            response = self.session.get(
-                self._url(url),
-                headers=self.credentials.auth_header,
-                timeout=self.timeout,
-            )
+            response = self._send("GET", url)
         except requests.RequestException as exc:
             raise ResultsUnavailableError(
                 f"Could not fetch {entity.lower()} results for {analysis_id}: {exc}"
@@ -479,11 +549,7 @@ class IPAClient:
         """Return the IPA Interpret link for *analysis_id*."""
         url = f"/pa/ipa/analysisResults/interpretLink/{self.application_name}/{analysis_id}"
         try:
-            response = self.session.get(
-                self._url(url),
-                headers=self.credentials.auth_header,
-                timeout=self.timeout,
-            )
+            response = self._send("GET", url)
         except requests.RequestException as exc:
             raise IPAError(f"Could not fetch the report URL for {analysis_id}: {exc}") from exc
 
@@ -608,6 +674,55 @@ def looks_like_quota(status_code: Optional[int], body: str) -> bool:
     if not any(word in haystack for word in _LIMIT_WORDS):
         return False
     return any(subject in haystack for subject in _ALLOWANCE_SUBJECTS)
+
+
+#: OAuth error codes that name a dead token. Matched only in a short, non-HTML
+#: body, or in a WWW-Authenticate header, where they can only mean one thing.
+_TOKEN_ERROR_CODES = ("invalid_token", "invalid_grant", "expired_token")
+
+
+def looks_like_auth_failure(
+    status_code: Optional[int], body: str, headers: Optional[Dict[str, str]] = None
+) -> bool:
+    """Whether IPA refused the token rather than the request.
+
+    Deliberately narrow: HTTP 401, or an OAuth error code in a
+    ``WWW-Authenticate`` header or a short plain-text body. Nothing else.
+
+    403 is excluded, for two reasons that point the same way. It means the
+    token was accepted and the *action* was refused, so signing in again cannot
+    help. And IPA answers 403 with "Monthly analysis quota exceeded" -- an
+    exhausted allowance, which this package has always classified as a quota
+    problem and must keep classifying that way. Treating 403 as a dead token
+    threw away a working session and reported the wrong cause; the test suite
+    caught it.
+
+    In particular an HTML page is never read as an auth failure, however much
+    it talks about signing in. IPA answers HTTP 200 with HTML for at least
+    three unrelated problems, and reading prose out of one of those pages is
+    exactly what once made a duplicate dataset name look like an outage. A
+    token rejection disguised as a login page is therefore missed here on
+    purpose: the cost of missing one is a confusing message, and the cost of a
+    false positive is throwing away a valid session mid-batch and opening a
+    browser on a machine that has none.
+    """
+    if status_code == 401:
+        return True
+
+    challenge = ""
+    if headers:
+        # requests' headers are case-insensitive; a plain dict in a test is not.
+        for key, value in headers.items():
+            if key.lower() == "www-authenticate":
+                challenge = str(value).lower()
+                break
+    if any(code in challenge for code in _TOKEN_ERROR_CODES):
+        return True
+
+    text = (body or "").strip()
+    if not text or len(text) > 500 or looks_like_html(text):
+        return False
+    return any(code in text.lower() for code in _TOKEN_ERROR_CODES)
 
 
 def looks_like_html(body: str) -> bool:
@@ -808,6 +923,21 @@ def is_ambiguous_page(status_code: Optional[int], body: str) -> bool:
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
     """Raise the most specific submission error the response supports."""
     excerpt = body[:2000]
+
+    # First, because every other branch below assumes IPA looked at the request.
+    # A refused token means it never did, and the file, the mapping and the
+    # allowance are all irrelevant to why this failed.
+    if looks_like_auth_failure(status_code, body):
+        raise TokenRefusedError(
+            "REJECTED: IPA refused the token, and signing in again did not "
+            "help.\n\n"
+            "This is an authentication problem, not a problem with your file "
+            "or your command. Check that the account still has access to the "
+            "project, then run 'ipaapi login --force'.\n\n"
+            f"IPA said: {excerpt!r}",
+            status_code=status_code,
+            body=excerpt,
+        )
 
     # Checked before the HTML branch: an exhausted allowance delivered as an
     # error page is still a quota problem, not a malformed request.

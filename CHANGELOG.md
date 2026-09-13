@@ -26,6 +26,42 @@ another full pass shows which.
 Nothing here changes the command line or the Python API. What changes is what
 the tool accepts, what it calls things, and what it reports.
 
+### Authentication, after live use over a VPN
+
+A login that timed out with no way to raise the clock turned out to sit on top
+of a larger gap: nothing anywhere handled a token that IPA refused.
+
+- **A refused token was reported as a bad file.** There was no 401 branch in
+  the client at all, so a dead token fell through the submission dispatcher and
+  came back as a malformed request, an outage, or an exhausted allowance --
+  every one of which sends the reader looking at their data. It is now a
+  `TokenRefusedError`, which subclasses both `AuthenticationError` and
+  `SubmissionError`, so code that catches either keeps working.
+- **The client never renewed the credentials it held.** `IPAClient.login()`
+  built them once and nothing refreshed them afterwards; the client did not
+  even keep the token cache, so it could not have persisted a renewal. A batch
+  that outlived its access token failed partway through with a misleading
+  message. The client now keeps the cache and the keywords it logged in with,
+  and renews through one method that every command shares: refresh the token
+  quietly and replay the request, or -- if the refresh is refused -- say so and
+  run the full login, which is what the user would have typed next.
+- **Replaying is gated on the narrow classifier, not on prose.** Only HTTP 401
+  or an OAuth error code in a `WWW-Authenticate` header or a short plain-text
+  body counts. An HTML page is never read as a refused token however much it
+  talks about signing in: IPA answers 200 with HTML for several unrelated
+  problems, and reading prose out of one of those is what made a duplicate
+  dataset name look like an outage in 1.3. A token rejection disguised as a
+  login page is therefore missed on purpose -- the cost is a confusing message,
+  where a false positive throws away a working session and opens a browser on a
+  machine that may not have one. 403 is excluded for the same reason and one
+  more: it means the token worked and the action did not, and IPA uses it for
+  an exhausted allowance.
+- **`ipaapi login --timeout SECS`**, because five minutes is not enough to get
+  through a browser forwarded over a slow VPN. `submit --timeout` was already
+  taken for the completion clock, so logins that other commands start on their
+  own read `IPAAPI_LOGIN_TIMEOUT` instead, matching `IPAAPI_TOKEN_FILE`. A
+  value that will not parse is reported and ignored rather than fatal.
+
 ### Fixed -- data reaching IPA
 
 Five routes by which IPA accepted a submission, reported success, and scored an

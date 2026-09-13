@@ -47,6 +47,27 @@ class SubmissionError(IPAError):
         self.body = body
 
 
+class TokenRefusedError(AuthenticationError, SubmissionError):
+    """IPA refused the token itself, rather than anything in the request.
+
+    Inherits from both :class:`AuthenticationError` and :class:`SubmissionError`
+    on purpose. It *is* an authentication problem, and code that wants to react
+    to one -- by signing in again rather than reporting a bad file -- should
+    catch it as such. But a submission that dies this way was still a submission
+    failure, and callers written before this class existed catch
+    ``SubmissionError`` around a submit. Being both keeps them working.
+
+    Raised only on evidence that cannot mean anything else: an HTTP 401 or 403,
+    or an OAuth error code delivered in a short non-HTML body. IPA's habit of
+    answering HTTP 200 with an HTML page means a token rejection dressed up as
+    a login page is *not* detected here, and deliberately so -- prose matching
+    on a 200 is what once made a duplicate dataset name look like an outage.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None, body: str | None = None):
+        SubmissionError.__init__(self, message, status_code, body)
+
+
 class QuotaExceededError(SubmissionError):
     """The account has no analyses left in its allowance.
 

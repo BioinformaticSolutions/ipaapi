@@ -30,8 +30,20 @@ def test_parse_analysis_ids_happy_path():
 
 
 def test_parse_analysis_ids_rejects_http_error():
-    with pytest.raises(SubmissionError, match="HTTP 401"):
+    """A 401 is a refused token, and says so -- while staying a SubmissionError.
+
+    It used to be reported as a generic rejection carrying "HTTP 401", which
+    left the reader to work out that nothing was wrong with their file. It is
+    now a TokenRefusedError, which is both an AuthenticationError and a
+    SubmissionError, so callers written against the old class keep working.
+    """
+    from ipaapi.errors import AuthenticationError, TokenRefusedError
+
+    with pytest.raises(TokenRefusedError, match="refused the token") as caught:
         IPAClient._parse_analysis_ids(FakeResponse("nope", status_code=401), expected=1)
+    assert isinstance(caught.value, SubmissionError)
+    assert isinstance(caught.value, AuthenticationError)
+    assert caught.value.status_code == 401
 
 
 def test_parse_analysis_ids_rejects_html_error_page():

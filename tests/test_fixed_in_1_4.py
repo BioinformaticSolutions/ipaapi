@@ -929,7 +929,9 @@ def test_a_missing_interpret_licence_is_not_reported_as_a_fault():
     client = IPAClient.__new__(IPAClient)
     client.credentials = Credentials("t")
     client.timeout = 5
-    client.session = type("S", (), {"get": lambda self, *a, **k: Response()})()
+    client._cache = None
+    client._login_kwargs = {}
+    client.session = type("S", (), {"request": lambda self, *a, **k: Response()})()
     with pytest.raises(ResultsUnavailableError) as caught:
         client.report_url("an-1")
     message = str(caught.value)
@@ -942,3 +944,213 @@ def test_submit_does_not_advertise_a_command_most_licences_cannot_run():
     source = inspect.getsource(cli.cmd_submit)
     assert "ipaapi status" in source
     assert "ipaapi report" not in source
+
+
+class _Resp:
+    """The little of a requests.Response these paths actually touch."""
+
+    def __init__(self, text, status_code=200, headers=None):
+        self.text = text
+        self.status_code = status_code
+        self.headers = headers or {}
+
+
+class _RecordingSession:
+    """Hands back queued responses and keeps what it was sent."""
+
+    def __init__(self, responses):
+        self._queue = list(responses)
+        self.sent = []
+
+    def request(self, method, url, **kwargs):
+        self.sent.append({"method": method, "url": url, **kwargs})
+        return self._queue.pop(0)
+
+
+def _client_with(*responses):
+    from ipaapi.client import IPAClient
+
+    client = IPAClient.__new__(IPAClient)
+    client.credentials = Credentials("stale-token")
+    client.timeout = 5
+    client._cache = None
+    client._login_kwargs = {}
+    client.session = _RecordingSession(responses)
+    return client
+
+
+# -- a refused token is an auth problem, and renews itself ------------------
+#
+# Live use, over a VPN: `ipaapi login` reported "Timed out after 300s" with no
+# way to raise the clock, and the refresh before it had already failed with
+# invalid_grant. Reading the client afterwards turned up the larger half of the
+# problem: nothing anywhere handled a refused token. There was no 401 branch,
+# the client never renewed credentials it held, and it did not even keep the
+# cache it would need to persist a renewal -- so a batch outliving its access
+# token failed partway through and was reported as a malformed request.
+
+
+def test_a_refused_token_is_not_reported_as_a_bad_file():
+    from ipaapi.client import IPAClient
+    from ipaapi.errors import AuthenticationError, SubmissionError, TokenRefusedError
+
+    with pytest.raises(TokenRefusedError) as caught:
+        IPAClient._parse_analysis_ids(_Resp("no", 401), expected=1)
+    message = str(caught.value)
+    assert "not a problem with your file" in message
+    # Both, so new code can catch the auth case and old code still catches it.
+    assert isinstance(caught.value, AuthenticationError)
+    assert isinstance(caught.value, SubmissionError)
+
+
+def test_an_exhausted_allowance_is_still_a_quota_problem_not_a_dead_token():
+    """403 means the token worked and the action did not, so re-login is wrong.
+
+    IPA answers an exhausted allowance with 403. Counting 403 as a refused
+    token threw away a working session, opened a browser, and reported the
+    wrong cause -- caught by the existing triage tests the moment it was tried.
+    """
+    from ipaapi.client import IPAClient, looks_like_auth_failure
+    from ipaapi.errors import QuotaExceededError
+
+    assert not looks_like_auth_failure(403, "Monthly analysis quota exceeded")
+    with pytest.raises(QuotaExceededError):
+        IPAClient._parse_analysis_ids(
+            _Resp("Monthly analysis quota exceeded", 403), expected=1
+        )
+
+
+def test_an_html_page_is_never_read_as_a_refused_token():
+    """The trap that made a duplicate dataset name look like an outage."""
+    from ipaapi.client import looks_like_auth_failure
+
+    page = "<html><body>Please sign in -- your session may have expired</body></html>"
+    assert not looks_like_auth_failure(200, page)
+    assert not looks_like_auth_failure(200, "x" * 600 + " invalid_token")
+    assert looks_like_auth_failure(200, "error=invalid_token")
+    assert looks_like_auth_failure(
+        200, "", {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+    )
+
+
+def test_a_dead_token_is_renewed_and_the_request_replayed():
+    """The quiet path: refresh, retry, no browser and nothing printed."""
+    from ipaapi import auth as auth_module
+    from ipaapi.client import IPAClient
+
+    client = _client_with(_Resp("no", 401), _Resp("an-1"))
+    renewed = Credentials("fresh-token")
+    calls = []
+
+    def fake_refresh(credentials, **kwargs):
+        calls.append(credentials.access_token)
+        return renewed
+
+    original = auth_module.refresh
+    import ipaapi.client as client_module
+
+    client_module.refresh = fake_refresh
+    try:
+        response = client._send("GET", "/pa/api/v2/analysisstatus")
+    finally:
+        client_module.refresh = original
+
+    assert calls == ["stale-token"]
+    assert response.text == "an-1"
+    assert client.credentials.access_token == "fresh-token"
+    # The replay carried the new token, not the dead one it was sent with.
+    assert client.session.sent[-1]["headers"]["Authorization"].endswith("fresh-token")
+
+
+def test_the_token_is_renewed_at_most_once_per_request():
+    """Otherwise a genuinely revoked account logs in forever, once per file."""
+    import ipaapi.client as client_module
+    from ipaapi.client import IPAClient
+
+    client = _client_with(_Resp("no", 401), _Resp("no", 401), _Resp("an-1"))
+    attempts = []
+
+    def fake_refresh(credentials, **kwargs):
+        attempts.append(1)
+        return Credentials(f"token-{len(attempts)}")
+
+    original = client_module.refresh
+    client_module.refresh = fake_refresh
+    try:
+        response = client._send("GET", "/pa/api/v2/analysisstatus")
+    finally:
+        client_module.refresh = original
+
+    assert len(attempts) == 1
+    assert response.status_code == 401       # handed back for the caller to classify
+    assert len(client.session.sent) == 2
+
+
+def test_the_login_timeout_is_settable_without_colliding_with_submit():
+    """`submit --timeout` was already taken for a different clock."""
+    import os
+
+    from ipaapi.auth import DEFAULT_LOGIN_TIMEOUT, LOGIN_TIMEOUT_ENV, _default_login_timeout
+
+    assert _default_login_timeout() == DEFAULT_LOGIN_TIMEOUT
+    os.environ[LOGIN_TIMEOUT_ENV] = "900"
+    try:
+        assert _default_login_timeout() == 900.0
+        os.environ[LOGIN_TIMEOUT_ENV] = "5m"      # ignored, not fatal
+        assert _default_login_timeout() == DEFAULT_LOGIN_TIMEOUT
+    finally:
+        del os.environ[LOGIN_TIMEOUT_ENV]
+
+    parser = cli.build_parser()
+    assert parser.parse_args(["login", "--timeout", "900"]).timeout == 900.0
+    # Still the completion clock on submit, untouched.
+    submit = parser.parse_args(
+        ["submit", "f.csv", "--project", "P", "--ID", "0:hugo", "--FC", "1:logratio"]
+    )
+    assert submit.timeout == 3600.0
+
+
+def test_a_non_positive_login_timeout_is_refused():
+    from ipaapi.errors import IPAError
+
+    args = cli.build_parser().parse_args(["login", "--timeout", "0"])
+    with pytest.raises(IPAError, match="positive"):
+        cli.cmd_login(args)
+
+
+def test_a_refused_refresh_announces_itself_and_runs_the_login(capsys):
+    """What the user asked for: stop, say why, and go to login -- one path.
+
+    Every command reaches this through the same method, so a dead token
+    behaves identically under submit, status, history and report.
+    """
+    import ipaapi.client as client_module
+    from ipaapi.errors import AuthenticationError
+
+    client = _client_with(_Resp("no", 401), _Resp("an-1"))
+    client._login_kwargs = {"browser": "firefox", "force": False}
+    seen = {}
+
+    def refuse(credentials, **kwargs):
+        raise AuthenticationError("(invalid_grant)")
+
+    def fake_login(**kwargs):
+        seen.update(kwargs)
+        return Credentials("browser-token")
+
+    client_module.refresh, original_refresh = refuse, client_module.refresh
+    client_module.login, original_login = fake_login, client_module.login
+    try:
+        response = client._send("GET", "/pa/api/v2/analysisstatus")
+    finally:
+        client_module.refresh = original_refresh
+        client_module.login = original_login
+
+    out = capsys.readouterr().out
+    assert "refresh token was refused" in out
+    assert "ipaapi login" in out
+    assert response.text == "an-1"
+    assert client.credentials.access_token == "browser-token"
+    # force, so it cannot hand back the same dead token out of the cache.
+    assert seen["force"] is True
+    assert seen["browser"] == "firefox"
