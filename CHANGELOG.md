@@ -138,6 +138,31 @@ returned identically on every re-run.
   limit"**, and negatives sliced from the front. **`--help` printed
   "(default: None)"** after help text that already stated a truthful default.
 
+### Fixed -- found in live use
+
+Two things five rounds of reading did not catch, because they needed IPA.
+
+- **A duplicate dataset name was reported as an outage.** IPA answers a
+  repeated name with "The page you are looking for is currently unavailable" --
+  the same page it uses for an over-long observation name and for a genuine
+  outage. Classifying it as the third told the user their command and data were
+  fine and that a re-run would resume; it is permanent, and in a batch it
+  halted the run and left every remaining file unsubmitted. That page is now
+  separated from the wordings that name a service problem outright, and its
+  message lists the three causes with the permanent one first. `cmd_submit`
+  also uses a free piece of evidence: if an earlier file in the same run was
+  accepted then IPA is up, so the file is quarantined and the batch continues
+  rather than stopping for one already-submitted file.
+
+- **A missing Interpret licence was treated as a fault.** Programmatic
+  retrieval of Interpret links is a separate commercial add-on that most IPA
+  licences do not include, so for most users `ipaapi report` can never work.
+  The error hedged ("may require"), `--wait` repeated it once per analysis, and
+  both `submit` and `history` advertised the command as a next step. It now
+  states the cause, is attempted once per run, is not suggested where it will
+  fail, and is marked as needing the add-on in `--help`, the README and on the
+  website.
+
 ### Fixed -- hangs, races and lost state
 
 - **`login()` hung forever despite its timeout.** The callback server was a
