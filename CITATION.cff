@@ -14,15 +14,20 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.21940020
     description: "Archived releases, all versions"
-  - type: doi
-    value: 10.5281/zenodo.21940021
-    description: "Version 1.0.0"
 keywords:
   - Ingenuity Pathway Analysis
   - pathway analysis
   - bioinformatics
   - command-line tool
 
-# No `version:` or `date-released:` on purpose. Both are per-release facts and
-# would need editing on every tag; Zenodo takes the version from the git tag,
-# and GitHub's citation widget does not require them.
+# No `version:`, `date-released:` or per-version DOI on purpose. All three are
+# per-release facts that would need editing on every tag, and the per-version
+# DOI proved the point: it named 1.0.0 and stayed that way through 1.0.1,
+# 1.1.0, 1.2.0 and 1.3.0. Zenodo never imported it, so the archive was never
+# wrong -- but GitHub's citation widget reads this file, and it showed a DOI
+# labelled as the current version when it was three releases behind.
+#
+# The one DOI listed is the CONCEPT doi. Zenodo redirects it to whichever
+# version is newest: minted with 1.0.0, it already resolves to 1.3.0. So a
+# citation taken from here is never stale and this file never needs touching
+# at release time. Zenodo takes the version from the git tag.
