@@ -816,3 +816,101 @@ def test_the_note_does_not_blame_ipa_for_your_own_rename(capsys):
 
     cli._report_shortened_names(["A" * 70], ["A" * 58])
     assert "not optional" in capsys.readouterr().out
+
+
+# -- found in live use, not by reading ---------------------------------------
+
+DUPLICATE_NAME_PAGE = (
+    "<html><head><title>Error | IPA Error</title></head><body><h1>Error</h1>"
+    "<p>The page you are looking for is currently unavailable.</p>"
+    "<p>If you continue to experience this problem contact support at "
+    "1-650-381-5111.</p></body></html>"
+)
+REAL_OUTAGE_PAGE = (
+    "<html><body>The page you are looking for is currently unavailable. The IPA "
+    "site might be experiencing technical difficulties. Please try the "
+    "following: Click the Refresh button on your browser, or try again later."
+    "</body></html>"
+)
+
+
+def test_the_ambiguous_page_is_not_asserted_to_be_an_outage():
+    """A duplicate dataset name produces this page, and calling it an outage
+    told the user their command and data were fine and a re-run would resume.
+    It is permanent. Confirmed in use."""
+    from ipaapi.client import _raise_submission_error
+    from ipaapi.errors import ServiceUnavailableError
+
+    with pytest.raises(ServiceUnavailableError) as caught:
+        _raise_submission_error("x", 200, DUPLICATE_NAME_PAGE)
+    message = str(caught.value)
+    assert "already exists in the project" in message
+    assert "PERMANENT" in message
+    assert "not a problem with your command" not in message
+
+
+def test_a_page_that_names_a_service_problem_still_reads_as_an_outage():
+    from ipaapi.client import _raise_submission_error, is_ambiguous_page
+    from ipaapi.errors import ServiceUnavailableError
+
+    assert not is_ambiguous_page(200, REAL_OUTAGE_PAGE)
+    with pytest.raises(ServiceUnavailableError) as caught:
+        _raise_submission_error("x", 200, REAL_OUTAGE_PAGE)
+    assert "IPA appears to be down" in str(caught.value)
+
+
+def _batch(body, fail_on):
+    """Run a four-file batch where one file is refused with *body*."""
+    from unittest import mock
+    from ipaapi.errors import ServiceUnavailableError
+
+    root = pathlib.Path(tempfile.mkdtemp())
+    for name in ("a.txt", "b.txt", "c.txt", "d.txt"):
+        (root / name).write_text("ID\tFC\ng1\t2.0\n")
+    log = str(root / "log.tsv")
+    sent = []
+
+    class Fake:
+        application_name = "app"
+        host = "h"
+
+        def submit(self, dataset, **kw):
+            if dataset.name == fail_on:
+                raise ServiceUnavailableError("x", status_code=200, body=body)
+            sent.append(dataset.name)
+            return ["an_" + dataset.name]
+
+    with mock.patch.object(cli, "_client", lambda a: Fake()):
+        rc = cli.main(["submit", str(root), "--project", "P", "--ID", "0:ensembl",
+                       "--FC", "1:foldchange", "--log-file", log])
+    listing = lambda d: sorted(
+        p.name for p in (root / d).glob("*.txt") if not p.name.endswith(".error.txt")
+    ) if (root / d).is_dir() else []
+    return rc, sent, listing("submitted"), listing("failed"), sorted(
+        p.name for p in root.glob("*.txt")
+    )
+
+
+def test_one_refused_file_does_not_block_the_rest_of_the_batch():
+    """IPA accepted an earlier file, so it is up: this is the file, and it will
+    fail identically forever. Halting 130 good files for it is the wrong trade."""
+    rc, sent, submitted, failed, left = _batch(DUPLICATE_NAME_PAGE, "b")
+    assert sent == ["a", "c", "d"]
+    assert failed == ["b.txt"]
+    assert left == []
+    assert rc == 1
+
+
+def test_a_real_outage_still_stops_the_batch():
+    rc, sent, submitted, failed, left = _batch(REAL_OUTAGE_PAGE, "b")
+    assert sent == ["a"]
+    assert failed == []
+    assert left == ["b.txt", "c.txt", "d.txt"]
+
+
+def test_the_ambiguous_page_on_the_first_file_stops_the_batch():
+    """Nothing has succeeded yet, so IPA really might be down. Stay cautious."""
+    rc, sent, submitted, failed, left = _batch(DUPLICATE_NAME_PAGE, "a")
+    assert sent == []
+    assert failed == []
+    assert left == ["a.txt", "b.txt", "c.txt", "d.txt"]

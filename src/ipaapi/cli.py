@@ -18,6 +18,7 @@ import sys
 from typing import List, Optional, Sequence, Tuple
 
 from . import __version__, history
+from .client import is_ambiguous_page
 from .dataset import Dataset, load_table
 from .errors import (
     GatewayTimeoutError,
@@ -1300,6 +1301,7 @@ def cmd_submit(args) -> int:
     log_failed = False
     skipped: List[str] = []
     quota_reached = False
+    consecutive_ambiguous = 0
     malformed = False
     service_down = False
     timed_out = False
@@ -1347,6 +1349,37 @@ def cmd_submit(args) -> int:
             malformed = True
             break
         except (QuotaExceededError, AnalysisRefusedError, ServiceUnavailableError) as exc:
+            # IPA's ambiguous page -- duplicate dataset name, over-long
+            # observation name, or a real outage -- gets one extra test before
+            # it is believed. If an earlier file in THIS run was accepted, IPA
+            # is demonstrably up, so it is not the third: it is this file, and
+            # it will fail the same way on every future run. Halting the batch
+            # and leaving 130 good files unsubmitted because one had been sent
+            # before is the wrong trade, so that file is quarantined and the
+            # run carries on. A second such failure in a row is what an outage
+            # beginning mid-batch looks like, and that does stop the run.
+            if (
+                isinstance(exc, ServiceUnavailableError)
+                and not isinstance(exc, GatewayTimeoutError)
+                and analysis_ids
+                and consecutive_ambiguous == 0
+                and is_ambiguous_page(
+                    getattr(exc, "status_code", None), getattr(exc, "body", "") or ""
+                )
+            ):
+                consecutive_ambiguous += 1
+                print(
+                    f"\nFAILED {dataset.name}: earlier files in this run were "
+                    "accepted, so IPA is up -- this is the file, not the "
+                    "service. The usual cause is that this dataset name already "
+                    f"exists in {args.project!r}.\n{exc}",
+                    file=sys.stderr,
+                )
+                failures.append(f"{dataset.name}: refused (probably a duplicate name)")
+                if triage is not None and source is not None:
+                    triage.mark_failed(source, f"IPA refused this file.\n\n{exc}")
+                continue
+
             # The file is fine; IPA will not run it right now. Leave this one
             # and everything after it for the next run.
             quota_reached = True

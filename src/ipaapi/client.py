@@ -770,11 +770,33 @@ def looks_like_gateway_timeout(status_code: Optional[int], body: str) -> bool:
     return bool(_GATEWAY_TIMEOUT.search(body or ""))
 
 
+#: The one outage phrase that is NOT evidence of an outage.
+#:
+#: "The page you are looking for is currently unavailable" is IPA's answer to
+#: at least three unrelated things -- a duplicate dataset name, an over-long
+#: observation name, and a genuine outage. Every other phrase in _OUTAGE names
+#: a service problem outright. Kept apart so the message can say which of the
+#: two situations it is in, instead of asserting an outage for a file that will
+#: fail identically on every future run.
+_AMBIGUOUS_PAGE = re.compile(r"currently unavailable", re.IGNORECASE)
+
+
 def looks_like_outage(status_code: Optional[int], body: str) -> bool:
     """Whether the response is IPA being down rather than rejecting the request."""
     if status_code in (502, 503, 504):
         return True
     return bool(_OUTAGE.search(body or ""))
+
+
+def is_ambiguous_page(status_code: Optional[int], body: str) -> bool:
+    """Whether this is the page that means three different things."""
+    if status_code in (502, 503, 504):
+        return False
+    text = body or ""
+    if not _AMBIGUOUS_PAGE.search(text):
+        return False
+    without = _AMBIGUOUS_PAGE.sub(" ", text)
+    return not _OUTAGE.search(without)
 
 
 def _raise_submission_error(message: str, status_code: Optional[int], body: str):
@@ -814,6 +836,35 @@ def _raise_submission_error(message: str, status_code: Optional[int], body: str)
             "means the analysis was created.\n\n"
             "The remaining files were left in place, so re-running the same "
             "command resumes.\n\n"
+            f"IPA said: {detail!r}",
+            status_code=status_code,
+            body=excerpt,
+        )
+
+    # Split in two, because one of IPA's outage phrases is not evidence of an
+    # outage. "The page you are looking for is currently unavailable" is its
+    # answer to at least three unrelated things -- a duplicate dataset name, an
+    # over-long observation name, and a genuine outage -- and only the last is
+    # transient. Asserting the last told a user whose file had simply been
+    # submitted before that their command and data were fine and that a re-run
+    # would resume, when it will fail identically every time. Confirmed in use,
+    # not by reading. Every other phrase names a service problem outright, so
+    # those keep the original message.
+    if is_ambiguous_page(status_code, body):
+        detail = html_error_text(body) if looks_like_html(body) else excerpt
+        raise ServiceUnavailableError(
+            "REJECTED: IPA returned the page it uses for several unrelated "
+            "problems, so the cause has to be narrowed by hand.\n\n"
+            "In order of likelihood:\n"
+            "  1. This dataset name already exists in the project. IPA refuses "
+            "a repeat and reports it exactly like this. Check with "
+            "'ipaapi history --project <name>', or look in IPA. This is "
+            "PERMANENT -- re-running will fail identically until the dataset is "
+            "renamed, removed, or sent to a different project.\n"
+            "  2. An over-long observation name. Shortened automatically since "
+            "1.2.0, so rule out an older build with 'ipaapi --version'.\n"
+            "  3. IPA is genuinely down. Only this one is transient, and only "
+            "this one is fixed by waiting.\n\n"
             f"IPA said: {detail!r}",
             status_code=status_code,
             body=excerpt,
