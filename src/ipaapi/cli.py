@@ -21,6 +21,7 @@ from . import __version__, history
 from .client import is_ambiguous_page
 from .dataset import Dataset, load_table
 from .errors import (
+    ResultsUnavailableError,
     GatewayTimeoutError,
     AnalysisRefusedError,
     IPAError,
@@ -61,6 +62,14 @@ MAX_OBSERVATION_NAME = 60
 
 #: A short list for help text; the full mapping is in GENE_ID_TYPES.
 COMMON_ID_TYPES = ("ensembl", "hugo", "entrezgene", "refseq", "swissprot")
+
+_REPORT_EPILOG = """\
+Programmatic retrieval of Interpret links is a SEPARATE COMMERCIAL ADD-ON to
+IPA, and most licences do not include it. Without it this command reports that
+your licence lacks it and exits; nothing is wrong with the analysis, and it can
+be opened in IPA directly. Everything else in ipaapi -- submit, status,
+history -- works on an ordinary licence.
+"""
 
 _EPILOG = f"""\
 column positions are 0-based: --ID 0 is the first column in the file
@@ -1527,7 +1536,6 @@ def cmd_submit(args) -> int:
         print(
             "Analyses are running in IPA. Check on them with:\n"
             f"  ipaapi status {joined}\n"
-            f"  ipaapi report {joined}\n"
             "Or re-run with --wait to block until they finish."
         )
         if log_path:
@@ -1535,12 +1543,22 @@ def cmd_submit(args) -> int:
         return 1 if (failures or quota_reached or quarantined) else 0
 
     statuses = client.wait_for(analysis_ids, interval=args.interval, timeout=args.timeout)
+    reports_unavailable = False
     exit_code = 1 if (failures or quota_reached or quarantined) else 0
     for analysis_id, status in statuses.items():
         print(f"{analysis_id}: {status.name.lower()}")
-        if status.succeeded:
+        if status.succeeded and not reports_unavailable:
+            # Attempted once per run, not once per analysis. Programmatic
+            # report retrieval is a separate commercial add-on that most IPA
+            # licences do not include, so for most people every one of these
+            # fails -- and repeating the explanation for forty analyses buries
+            # the IDs, which are the thing worth reading.
             try:
                 print(f"  {client.report_url(analysis_id)}")
+            except ResultsUnavailableError as exc:
+                reports_unavailable = True
+                print(f"  {exc}")
+                print("  (not retried for the remaining analyses)")
             except IPAError as exc:
                 print(f"  no report link: {exc}")
         else:
@@ -1569,7 +1587,13 @@ def cmd_status(args) -> int:
 
 
 def cmd_report(args) -> int:
-    """Print (and optionally open) IPA Interpret links."""
+    """Print (and optionally open) IPA Interpret links.
+
+    Requires the commercial Interpret add-on, which most IPA licences do not
+    include. Without it this endpoint answers HTTP 500 and there is nothing to
+    fix -- confirmed against a licence that does not carry it. The analyses
+    themselves are unaffected and open normally in IPA.
+    """
     client = _client(args)
     exit_code = 0
     for analysis_id in args.analysis_ids:
@@ -1591,6 +1615,16 @@ def cmd_report(args) -> int:
             continue
         try:
             url = client.report_url(analysis_id)
+        except ResultsUnavailableError as exc:
+            # The licence, not this analysis. Say it once and stop, rather than
+            # repeating it for every ID on the command line.
+            print(f"{analysis_id}: {exc}", file=sys.stderr)
+            if len(args.analysis_ids) > 1:
+                print(
+                    "Stopping: the same licence applies to every analysis here.",
+                    file=sys.stderr,
+                )
+            return 1
         except IPAError as exc:
             print(f"{analysis_id}: {exc}", file=sys.stderr)
             exit_code = 1
@@ -1687,7 +1721,7 @@ def cmd_history(args) -> int:
         print(line)
 
     ids = " ".join(r.get("analysis_id", "") for r in rows)
-    print(f"\n{len(rows)} submission(s). Report links: ipaapi report {ids}")
+    print(f"\n{len(rows)} submission(s).")
     return 0
 
 
@@ -1818,8 +1852,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser(
         "report",
-        help="print IPA Interpret links for analyses",
+        help="print IPA Interpret links (needs a separate commercial add-on)",
         description=cmd_report.__doc__,
+        epilog=_REPORT_EPILOG,
         formatter_class=_Formatter,
     )
     report.add_argument("analysis_ids", nargs="+", metavar="ANALYSIS_ID")

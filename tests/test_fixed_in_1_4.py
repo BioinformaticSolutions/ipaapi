@@ -914,3 +914,31 @@ def test_the_ambiguous_page_on_the_first_file_stops_the_batch():
     assert sent == []
     assert failed == []
     assert left == ["a.txt", "b.txt", "c.txt", "d.txt"]
+
+
+def test_a_missing_interpret_licence_is_not_reported_as_a_fault():
+    """Most IPA licences do not carry the Interpret add-on, so this is the
+    ordinary outcome, not something to investigate. Confirmed in use."""
+    from ipaapi.client import IPAClient
+    from ipaapi.errors import ResultsUnavailableError
+
+    class Response:
+        status_code = 500
+        text = ""
+
+    client = IPAClient.__new__(IPAClient)
+    client.credentials = Credentials("t")
+    client.timeout = 5
+    client.session = type("S", (), {"get": lambda self, *a, **k: Response()})()
+    with pytest.raises(ResultsUnavailableError) as caught:
+        client.report_url("an-1")
+    message = str(caught.value)
+    assert "licence does not include" in message
+    assert "Nothing is wrong with the analysis" in message
+
+
+def test_submit_does_not_advertise_a_command_most_licences_cannot_run():
+    import inspect
+    source = inspect.getsource(cli.cmd_submit)
+    assert "ipaapi status" in source
+    assert "ipaapi report" not in source

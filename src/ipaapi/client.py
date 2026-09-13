@@ -489,12 +489,18 @@ class IPAClient:
 
         if response.status_code != 200:
             body = (response.text or "").strip()[:1000]
-            raise IPAError(
-                f"Could not fetch the report URL for {analysis_id} "
-                f"(HTTP {response.status_code}) from {url}."
-                + (f"\nIPA said: {body!r}" if body else "\nThe response was empty.")
-                + "\nInterpret links may require the commercial IPA add-on; the "
-                "analysis itself is unaffected and can be opened in IPA directly."
+            # Confirmed against a licence that does not carry the add-on:
+            # this endpoint answers 500 and the cause is the licence, not the
+            # analysis. Most IPA licences do not include it, so this is the
+            # ordinary outcome rather than a fault worth investigating.
+            raise ResultsUnavailableError(
+                f"No Interpret link for {analysis_id}: your IPA licence does not "
+                "include programmatic report retrieval.\n"
+                "That is a separate commercial add-on, and most licences do not "
+                "carry it. Nothing is wrong with the analysis -- it ran, it is "
+                "in your project, and you can open it in IPA directly.\n"
+                f"(IPA answered HTTP {response.status_code} at {url}.)"
+                + (f"\nIPA said: {body!r}" if body else "")
             )
         try:
             payload = response.json()

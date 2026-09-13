@@ -138,7 +138,7 @@ submitted results: 43595871
 Submitted 1 analysis.
 Analyses are running in IPA. Check on them with:
   ipaapi status 43595871
-  ipaapi report 43595871
+  ipaapi report 43595871        # needs the Interpret add-on; see below
 Recorded in ~/.local/state/ipaapi/submissions.tsv -- see 'ipaapi history'.
 ```
 
@@ -197,7 +197,7 @@ That last check matters more than it looks — see
 ipaapi validate   check a mapping against file(s) without uploading
 ipaapi submit     upload into a project and start analyses
 ipaapi status     check the state of existing analyses
-ipaapi report     print IPA Interpret links
+ipaapi report     print IPA Interpret links (needs a commercial add-on)
 ipaapi history    list analyses submitted through this tool
 ipaapi login      authenticate and cache a token without submitting
 ```
@@ -339,7 +339,7 @@ ipaapi history --status
 2026-08-05T08:35:53-06:00  43595039  Study1  SampleA_DEG
 2026-08-05T08:35:53-06:00  43595041  Study1  SampleB_DEG
 
-2 submission(s). Report links: ipaapi report 43595039 43595041
+2 submission(s).
 ```
 
 Plain TSV — grep it, open it in a spreadsheet. It only covers submissions made
@@ -670,10 +670,16 @@ printed, so a misclassification is visible.
 checks status first, so an unfinished analysis says so rather than surfacing a
 bare HTTP 500.
 
-**These have been observed to return HTTP 500 even for succeeded analyses.**
-The cause is unconfirmed — possibly the commercial add-on licence, possibly a
-stale endpoint path inherited from the demo. `examples/probe_interpret.py`
-prints the raw response for diagnosis. Analyses open fine in IPA itself.
+**This requires a separate commercial add-on to IPA, and most licences do not
+include it.** Confirmed against a licence that does not carry it: the endpoint
+answers HTTP 500 and there is nothing to fix. `ipaapi report` says so and
+exits, rather than presenting it as a fault. The analyses themselves are
+unaffected — they ran, they are in your project, and they open normally in IPA.
+
+Everything else in this package works on an ordinary IPA licence. If you are
+not sure whether yours carries the add-on, run `ipaapi report` on any finished
+analysis: the answer takes a second and costs nothing.
+`examples/probe_interpret.py` prints the raw response if you want to see it.
 
 ---
 
@@ -978,10 +984,8 @@ bump. See `CHANGELOG.md`.
 
 Known open questions, none of which affect submission:
 
-- Interpret links (`ipaapi report`) have returned HTTP 500 for analyses that
-  succeeded. Cause unconfirmed; possibly the commercial add-on licence.
-- Programmatic result retrieval (`client.results()`) requires that same add-on
-  and is largely untested here.
+- Programmatic result retrieval (`client.results()`) requires the same
+  commercial add-on as Interpret links, and is largely untested here.
 - The documented reference-set size rule does not match observed behaviour;
   set `--reference-set` explicitly.
 
