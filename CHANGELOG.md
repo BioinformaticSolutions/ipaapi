@@ -4,6 +4,12 @@ Versions follow [semantic versioning](https://semver.org): breaking changes to
 the command line or the Python API bump the major number, additions bump the
 minor, fixes bump the patch.
 
+**A change that does not alter the way the program runs does not get a
+version.** Documentation, comments, packaging metadata and test-only changes
+ride along with the next release that does. A version number is a statement
+that something is different for the person running the tool, and a string of
+releases hours apart says the opposite.
+
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 

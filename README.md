@@ -993,6 +993,12 @@ classification, triage behaviour, and token cache and refresh logic.
 add a `CHANGELOG.md` entry. `ipaapi --version` reports the install path too,
 which is what actually answers "am I running the wheel I think I am".
 
+A change that does not alter the way the program runs does not get a version.
+Documentation, comments, packaging metadata and test-only changes wait for the
+next release that does. This is why the README on PyPI can lag the repository:
+it updates when a release does, and a release needs a reason someone running
+the tool would recognise.
+
 ### Differences from the demo
 
 - Column mapping by name in any order, validated before upload.
