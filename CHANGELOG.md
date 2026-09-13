@@ -7,29 +7,25 @@ minor, fixes bump the patch.
 Check what you're running with `ipaapi --version`, which reports the version,
 the install location, and whether it's an editable checkout rather than a wheel.
 
-## 1.4.0 — 2026-09-12
+## 1.5.0 — 2026-09-13
 
-Fifty-seven defects, found by reading the package end to end five times rather
-than by hitting them in use. Every one was reproduced before it was fixed, and
-each has a regression test -- 130 new tests, 333 in total.
+Authentication, after live use over a VPN. A login that timed out with no way
+to raise the clock turned out to sit on top of a larger gap: nothing anywhere
+handled a token that IPA refused. Nothing here changes behaviour for anyone
+whose token is working; the minor bump is for the additions, not for risk.
 
-The count per round was 30, 14, 8, 5, 1. Most of what rounds two through five
-found were defects in the PREVIOUS round's fixes rather than things the original
-code had hidden: round two re-opened a hole round one had closed, round four
-turned `--strip` into a silent no-op while fixing how it interacted with
-shortening, and round five found that round four's OAuth guard had made a denial
-hang for five minutes. Each round's fixes are listed with the round that found
-them, because the pattern is the useful part: a fix written against one
-reproduction tends to be narrower or broader than the defect it names, and only
-another full pass shows which.
+### Added
 
-Nothing here changes the command line or the Python API. What changes is what
-the tool accepts, what it calls things, and what it reports.
+- **`ipaapi login --timeout SECS`**, because five minutes is not enough to get
+  through a browser forwarded over a slow VPN. `submit --timeout` was already
+  taken for the completion clock, so logins that other commands start on their
+  own read `IPAAPI_LOGIN_TIMEOUT` instead, matching `IPAAPI_TOKEN_FILE`. A
+  value that will not parse is reported and ignored rather than fatal.
+- **`TokenRefusedError`**, raised when IPA refuses the token itself. It
+  subclasses both `AuthenticationError` and `SubmissionError`, so code that
+  catches either keeps working unchanged.
 
-### Authentication, after live use over a VPN
-
-A login that timed out with no way to raise the clock turned out to sit on top
-of a larger gap: nothing anywhere handled a token that IPA refused.
+### Fixed
 
 - **A refused token was reported as a bad file.** There was no 401 branch in
   the client at all, so a dead token fell through the submission dispatcher and
@@ -56,11 +52,25 @@ of a larger gap: nothing anywhere handled a token that IPA refused.
   machine that may not have one. 403 is excluded for the same reason and one
   more: it means the token worked and the action did not, and IPA uses it for
   an exhausted allowance.
-- **`ipaapi login --timeout SECS`**, because five minutes is not enough to get
-  through a browser forwarded over a slow VPN. `submit --timeout` was already
-  taken for the completion clock, so logins that other commands start on their
-  own read `IPAAPI_LOGIN_TIMEOUT` instead, matching `IPAAPI_TOKEN_FILE`. A
-  value that will not parse is reported and ignored rather than fatal.
+
+## 1.4.0 — 2026-09-12
+
+Fifty-seven defects, found by reading the package end to end five times rather
+than by hitting them in use. Every one was reproduced before it was fixed, and
+each has a regression test -- 130 new tests, 333 in total.
+
+The count per round was 30, 14, 8, 5, 1. Most of what rounds two through five
+found were defects in the PREVIOUS round's fixes rather than things the original
+code had hidden: round two re-opened a hole round one had closed, round four
+turned `--strip` into a silent no-op while fixing how it interacted with
+shortening, and round five found that round four's OAuth guard had made a denial
+hang for five minutes. Each round's fixes are listed with the round that found
+them, because the pattern is the useful part: a fix written against one
+reproduction tends to be narrower or broader than the defect it names, and only
+another full pass shows which.
+
+Nothing here changes the command line or the Python API. What changes is what
+the tool accepts, what it calls things, and what it reports.
 
 ### Fixed -- data reaching IPA
 

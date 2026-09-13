@@ -83,7 +83,7 @@ and whether it's an editable checkout rather than a built wheel:
 
 ```bash
 $ ipaapi --version
-ipaapi 1.4.0
+ipaapi 1.5.0
 installed at /usr/lib/python3.11/site-packages/ipaapi
 python 3.11.5 (/usr/bin/python3)
 ```
