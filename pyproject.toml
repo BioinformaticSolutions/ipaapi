@@ -12,7 +12,7 @@ description = "Command-line client for QIAGEN Ingenuity Pathway Analysis: map ar
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Ken Jones", email = "Ken.Jones@bioinformaticsolutions.com" }]
+authors = [{ name = "Kenneth L. Jones", email = "Ken.Jones@bioinformaticsolutions.com" }]
 keywords = ["ipa", "ingenuity", "pathway", "bioinformatics", "qiagen"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
